@@ -24,8 +24,8 @@ const servers = {
         apiKey: ''
     },
     US05: {
-        apiUrl: 'https://156.244.15.215:11111/', // replace with actual URL
-        apiKey: 'NETvlfDZjtISTpmGolGdAA'
+        apiUrl: '', // replace with actual URL
+        apiKey: ''
     },
     UK36: {
         apiUrl: '', // replace with actual URL
