@@ -67,11 +67,12 @@ async function getKeyStatusResponseMessage(text) {
         }
 
         const usedMB = (key.usedBytes / 1024 / 1024).toFixed(2);
-        const limitMB = key.dataLimit?.bytes
-            ? (key.dataLimit.bytes / 1024 / 1024).toFixed(2)
+        const limitGB = key.dataLimit?.bytes
+            ? (key.dataLimit.bytes / 1024 / 1024 / 1024).toFixed(2)
             : '∞';
 
-        return `✅ *Key Found!*\n� Used: *${usedMB} MB*\n� Limit: *${limitMB} MB*`;
+        return `✅ *Key Found!*\n📶 Used: *${usedMB} MB*\n📊 Limit: *${limitGB} GB*`;
+
     } catch (err) {
         throw new Error(`❌ Failed to fetch key data: ${err.message}`);
     }
