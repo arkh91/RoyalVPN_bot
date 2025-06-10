@@ -2,10 +2,14 @@ const TelegramBot = require('node-telegram-bot-api');
 const insertUser = require('./db/insertUser'); // Adjust path as needed
 const insertVisit = require('./db/insertVisit');
 const { createNewKey } = require('./db/KeyCreation');
+const { getKeyStatusResponseMessage } = require('./KeyStatus');
 const token = '';
 
 //payments key
 const { paymentsMenu, paymentsSubMenus } = require('./payments');
+
+// Track which users are waiting to send a key
+const waitingForKey = new Set();
 
 //AccountCreation
 //const insertUser = require('./database/AccountCreation.js');
@@ -25,9 +29,9 @@ const bot = new TelegramBot(token, {
 const mainMenu = {
     reply_markup: {
         inline_keyboard: [
-            [{ text: 'IRAN��', callback_data: 'menu_1' }],
-            [{ text: 'Russia��', callback_data: 'menu_1' }],
-            [{ text: 'India��', callback_data: 'menu_1' }],
+            [{ text: 'IRAN🇮🇷', callback_data: 'menu_1' }],
+            [{ text: 'Russia🇷🇺', callback_data: 'menu_1' }],
+            [{ text: 'India🇮🇳', callback_data: 'menu_1' }],
         ]
     }
 };
@@ -155,7 +159,7 @@ bot.onText(/\/start/, async (msg) => {
         mainMenu
     );
 });
-
+//const userId = msg.from.id;
 // Handle /userid command
 bot.onText(/\/userid/, (msg) => {
     const chatId = msg.chat.id;
@@ -203,6 +207,30 @@ bot.onText(/\/ps/, (msg) => {
 });
 
 
+bot.onText(/\/KeyStatus/, (msg) => {
+    const chatId = msg.chat.id;
+    bot.sendMessage(chatId, '� Please send me your key now:');
+    waitingForKey.add(chatId);
+});
+
+// Handle all messages 
+bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text?.trim();
+    if (!text || text.startsWith('/KeyStatus')) return;
+
+    if (waitingForKey.has(chatId)) {
+        waitingForKey.delete(chatId);
+
+        try {
+            const result = await getKeyStatusResponseMessage(text);
+            bot.sendMessage(chatId, result, { parse_mode: 'Markdown' });
+        } catch (err) {
+            bot.sendMessage(chatId, `� Error: ${err.message}`);
+            bot.sendMessage(chatId, `Here`);
+	}
+    }
+});
 
 
 // Map callback data to server key in KeyCreation.js
@@ -222,7 +250,8 @@ bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
     const data = query.data;
-
+    const userId = query.message.from.id;
+		
     // Handle VPN speed location buttons (trigger key creation)
     if (callbackToServer[data]) {
         const selectedServer = callbackToServer[data];
@@ -233,8 +262,9 @@ bot.on('callback_query', async (query) => {
         });
 
       try {
-    const vpnKeyUrl = await createNewKey(selectedServer);
-    bot.sendMessage(chatId, `✅ VPN key successfully created for ${selectedServer}.\n\n� Your key:\n${vpnKeyUrl}`);
+    const vpnKeyUrl = await createNewKey(selectedServer, userId);
+    bot.sendMessage(chatId, `✅ VPN key successfully created for ${selectedServer}`);//.\n\n� Your key:\n${vpnKeyUrl}`);
+    bot.sendMessage(chatId, `${vpnKeyUrl}`);	      
 } catch (err) {
     console.error('❌ Key creation error:', err);
     bot.sendMessage(chatId, `⚠️ Failed to create VPN key for ${selectedServer}.`);
