@@ -1,14 +1,7 @@
 const axios = require('axios');
 //const { URL } = require('url');
+const SERVERS = require('./servers');
 
-// Configuration - adjust these values for your servers
-const SERVERS = {
-    US05: {
-        apiUrl: '', // Full API endpoint
-        apiKey: '',
-        aliases: ['test.com'] // All possible domain variations
-    }
-};
 
 // Helper to validate Outline key format
 function isValidOutlineKey(text) {
@@ -55,7 +48,6 @@ async function getKeyStatusResponseMessage(text) {
 
     try {
         const url = `${config.apiUrl}${config.apiKey}/access-keys/`;
-
         const response = await axios.get(url);
 
         const key = response.data.accessKeys.find(k =>
@@ -66,22 +58,23 @@ async function getKeyStatusResponseMessage(text) {
             throw new Error("❌ Key not found on server.");
         }
 
-        const usedMB = (key.usedBytes / 1024 / 1024).toFixed(2);
-        const limitGB = key.dataLimit?.bytes
-            ? (key.dataLimit.bytes / 1024 / 1024 / 1024).toFixed(2)
+        // Parse usage
+	console.log("DEBUG key =", JSON.stringify(key, null, 2));
+        const usedBytes = parseFloat(key.usedBytes);
+        const limitBytes = key.dataLimit?.bytes;
+
+        const usedGB = isNaN(usedBytes)
+            ? 'Unknown'
+            : (usedBytes / 1024 / 1024 / 1024).toFixed(2);
+
+        const limitGB = limitBytes
+            ? (limitBytes / 1024 / 1024 / 1024).toFixed(2)
             : '∞';
 
-        return `✅ *Key Found!*\n📶 Used: *${usedMB} MB*\n📊 Limit: *${limitGB} GB*`;
+        return `✅ *Key Found!*\n� Used: *${usedGB} GB*\n� Limit: *${limitGB} GB*`;
 
     } catch (err) {
         throw new Error(`❌ Failed to fetch key data: ${err.message}`);
     }
 }
 
-
-
-
-
-
-
-module.exports = { getKeyStatusResponseMessage };
