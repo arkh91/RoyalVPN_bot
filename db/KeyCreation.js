@@ -1,38 +1,7 @@
 const pool = require('../db'); // path to db.js
 const axios = require('axios');
 process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0'; // For testing only
-
-// Map of server names to their URLs and API keys
-const servers = {
-    Ger: {
-        apiUrl: '', // replace with actual URL
-        apiKey: ''
-    },
-    Sweden82: {
-        apiUrl: '', // replace with actual URL
-        apiKey: ''
-    },
-    TUR14: {
-        apiUrl: '', // replace with actual URL
-        apiKey: ''
-    },
-    IRAN: {
-        apiUrl: '', // replace with actual URL
-        apiKey: ''
-    },
-    IT01: {
-        apiUrl: '', // replace with actual URL
-        apiKey: ''
-    },
-    US05: {
-        apiUrl: '', // replace with actual URL
-        apiKey: ''
-    },
-    UK36: {
-        apiUrl: '', // replace with actual URL
-        apiKey: ''
-    }
-};
+const servers = require ('../servers');
 
 const DATA_LIMIT_BYTES = 1 * 1024 * 1024 * 1024;
 
