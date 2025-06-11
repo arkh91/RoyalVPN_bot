@@ -36,7 +36,7 @@ async function setKeyLimit(apiUrl, apiKey, keyId, dataLimitBytes) {
         );
 
         if (response.status === 204) {
-            console.log(`✅ Data limit of ${dataLimitBytes / (1024 * 1024 * 1024)} GB set for key ID: ${keyId}`);
+            console.log(`✅ Data limit of ${dataLimitBytes / (1000 * 1000 * 1024)} GB set for key ID: ${keyId}`);
         } else {
             console.error('❌ Failed to set data limit:', response.status, response.data);
         }
