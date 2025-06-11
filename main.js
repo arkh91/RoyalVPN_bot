@@ -1,72 +1,41 @@
 const TelegramBot = require('node-telegram-bot-api');
-const insertUser = require('./db/insertUser'); // Adjust path as needed
+const insertUser = require('./db/insertUser');
 const insertVisit = require('./db/insertVisit');
 const { createNewKey } = require('./db/KeyCreation');
 const { getKeyStatusResponseMessage } = require('./KeyStatus');
 const token = '';
 
-//payments key
 const { paymentsMenu, paymentsSubMenus } = require('./payments');
-
-// Track which users are waiting to send a key
 const waitingForKey = new Set();
 
-//AccountCreation
-//const insertUser = require('./database/AccountCreation.js');
-
-
-// Create a bot that uses polling
 const bot = new TelegramBot(token, {
     polling: {
-        interval: 300,       // Check for updates every 300ms
+        interval: 300,
         autoStart: true,
-        params: {
-            timeout: 10        // Long polling timeout
-        }
+        params: { timeout: 10 }
     }
 });
-// Main menu with three options in separate rows
+
 const mainMenu = {
     reply_markup: {
         inline_keyboard: [
             [{ text: 'IRAN🇮🇷', callback_data: 'menu_1' }],
             [{ text: 'Russia🇷🇺', callback_data: 'menu_1' }],
-            [{ text: 'India🇮🇳', callback_data: 'menu_1' }],
+            [{ text: 'India🇮🇳', callback_data: 'menu_1' }]
         ]
     }
 };
 
-// Submenus for each main menu option (1 button per row)
 const subMenus = {
     menu_1: {
         reply_markup: {
             inline_keyboard: [
                 [{ text: 'Game', callback_data: 'sub_1_game' }],
                 [{ text: 'High Speed', callback_data: 'sub_1_speed' }],
-                [{ text: '� Go Back', callback_data: 'back_to_main' }]
+                [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
             ]
         }
     },
-    menu_2: {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: 'Sub 2-1', callback_data: 'sub_2_1' }],
-                [{ text: 'Sub 2-2', callback_data: 'sub_2_2' }],
-                [{ text: '� Go Back', callback_data: 'back_to_main' }]
-            ]
-        }
-    },
-    menu_3: {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: 'Sub 3-1', callback_data: 'sub_3_1' }],
-                [{ text: 'Sub 3-2', callback_data: 'sub_3_2' }],
-                [{ text: '� Go Back', callback_data: 'back_to_main' }]
-            ]
-        }
-    },
-
-    // Submenu for Game
     sub_1_game: {
         text: '� Choose a game-optimized server for smoother, faster gameplay:',
         reply_markup: {
@@ -74,29 +43,12 @@ const subMenus = {
                 [{ text: 'Arena Breakout', callback_data: 'game_arena' }],
                 [{ text: 'FIFA', callback_data: 'game_fifa' }],
                 [{ text: 'Call of Duty Mobile', callback_data: 'game_codm' }],
-                [{ text: '� Go Back', callback_data: 'menu_1' }]
+                [{ text: '⬅️ Go Back', callback_data: 'menu_1' }]
             ]
         }
     },
-
-    // Submenu for High Speed
     sub_1_speed: {
         text: '⚡ Choose a high-speed location for fast and secure internet:',
-        /*
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: 'Sweden', callback_data: 'speed_ca' }],
-                [{ text: 'Sweden', callback_data: 'speed_sweden' }],
-                [{ text: 'Spain', callback_data: 'speed_sp' }],
-                [{ text: 'Iran', callback_data: 'speed_ir' }],
-                [{ text: 'Italy', callback_data: 'speed_it' }],
-                [{ text: 'Turkey', callback_data: 'speed_tur' }],
-                [{ text: 'USA', callback_data: 'speed_usa' }],
-                [{ text: 'UK', callback_data: 'speed_uk' }],
-                [{ text: '� Go Back', callback_data: 'menu_1' }]
-            ]
-        }
-        */
         reply_markup: {
             inline_keyboard: [
                 [
@@ -115,52 +67,44 @@ const subMenus = {
                     { text: 'USA', callback_data: 'speed_usa' },
                     { text: 'UK', callback_data: 'speed_uk' }
                 ],
-                [
-                    { text: '� Go Back', callback_data: 'menu_1' }
-                ]
+                [{ text: '⬅️ Go Back', callback_data: 'menu_1' }]
             ]
         }
-
+    },
+    bandwidth_menu: {
+        text: 'Select the 30-day Outline bandwidth limit:',
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '50 GB / 0.99 USD', callback_data: 'bw_50' }],
+                [{ text: '100 GB / 1.99 USD', callback_data: 'bw_100' }],
+                [{ text: '300 GB / 5.99 USD', callback_data: 'bw_300' }],
+                [{ text: '500 GB / 9.99 USD', callback_data: 'bw_500' }],
+                [{ text: '1000 GB / 19.99 USD', callback_data: 'bw_1000' }],
+                [{ text: '⬅️ Go Back', callback_data: 'sub_1_speed' }]
+            ]
+        }
     }
-
 };
 
-// Function to handle and log user info
-function handleUserInfo(msg) {
-    const userId = msg.from.id;
-    const username = msg.from.username || 'No username';
-    const firstName = msg.from.first_name || '';
-    const lastName = msg.from.last_name || '';
-
-    console.log(`User ID: ${userId}`);
-    console.log(`Username: ${username}`);
-    console.log(`First Name: ${firstName}`);
-    console.log(`Last Name: ${lastName}`);
+async function checkBalance(userId) {
+    return true; // Replace with actual DB logic later
 }
 
-// Start command sends the main menu
 bot.onText(/\/start/, async (msg) => {
-    //handleUserInfo(msg);
     try {
-        await insertUser(msg.from); // insert or update user info
+        await insertUser(msg.from);
+        await insertVisit(msg.from.id);
     } catch (err) {
         console.error('Error inserting user:', err);
     }
 
-	try {
-		await insertVisit(msg.from.id);     // Log visit
-	} catch {
-		console.error('Error inserting user:', err);
-    }
-
-	bot.sendMessage(
+    bot.sendMessage(
         msg.chat.id,
         "Protect your privacy with a high-speed VPN built for security, reliability, and ease of use. Our premium servers ensure fast, encrypted connections worldwide—no logs, no limits. Whether you're streaming, working, or browsing, stay safe and anonymous with just one click.\n\nPlease choose your country of residence:",
         mainMenu
     );
 });
-//const userId = msg.from.id;
-// Handle /userid command
+
 bot.onText(/\/userid/, (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
@@ -176,36 +120,23 @@ bot.onText(/\/userid/, (msg) => {
     bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 });
 
-// Handle /payments command
 bot.onText(/\/payment/, (msg) => {
     const chatId = msg.chat.id;
-
-    const underDevelopmentMessage = {
+    bot.sendMessage(chatId, '� This section is under development.', {
         reply_markup: {
-            inline_keyboard: [
-                [{ text: '� Go Back', callback_data: 'back_to_main' }]
-            ]
+            inline_keyboard: [[{ text: '� Go Back', callback_data: 'back_to_main' }]]
         }
-    };
-
-    bot.sendMessage(chatId, '� This section is under development. Please check back later.', underDevelopmentMessage);
+    });
 });
 
-// Handle /ps command
 bot.onText(/\/ps/, (msg) => {
     const chatId = msg.chat.id;
-
-    const underDevelopmentMessage = {
+    bot.sendMessage(chatId, '� This section is under development.', {
         reply_markup: {
-            inline_keyboard: [
-                [{ text: '� Go Back', callback_data: 'back_to_main' }]
-            ]
+            inline_keyboard: [[{ text: '� Go Back', callback_data: 'back_to_main' }]]
         }
-    };
-
-    bot.sendMessage(chatId, '� This section is under development. Please check back later.', underDevelopmentMessage);
+    });
 });
-
 
 bot.onText(/\/KeyStatus/, (msg) => {
     const chatId = msg.chat.id;
@@ -213,7 +144,6 @@ bot.onText(/\/KeyStatus/, (msg) => {
     waitingForKey.add(chatId);
 });
 
-// Handle all messages 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text?.trim();
@@ -221,59 +151,54 @@ bot.on('message', async (msg) => {
 
     if (waitingForKey.has(chatId)) {
         waitingForKey.delete(chatId);
-
         try {
             const result = await getKeyStatusResponseMessage(text);
             bot.sendMessage(chatId, result, { parse_mode: 'Markdown' });
         } catch (err) {
-            bot.sendMessage(chatId, `� Error: ${err.message}`);
-            bot.sendMessage(chatId, `Here`);
-	}
+            bot.sendMessage(chatId, `❌ Error: ${err.message}`);
+        }
     }
 });
 
-
-// Map callback data to server key in KeyCreation.js
 const callbackToServer = {
     speed_ger: 'Ger',
     speed_sweden: 'Sweden82',
-    speed_sp: 'Spain', // Add this server to KeyCreation.js if needed
+    speed_sp: 'Spain',
     speed_ir: 'IRAN',
     speed_it: 'IT01',
     speed_tur: 'TUR14',
-    speed_usa: 'US05',
+    speed_usa: 'US08',
     speed_uk: 'UK36'
 };
 
-// Callback query handling
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
     const data = query.data;
     const userId = query.message.from.id;
-		
-    // Handle VPN speed location buttons (trigger key creation)
-    if (callbackToServer[data]) {
+
+    const bandwidthCountries = ['speed_sweden', 'speed_sp', 'speed_it', 'speed_tur', 'speed_usa', 'speed_uk'];
+    if (bandwidthCountries.includes(data)) {
         const selectedServer = callbackToServer[data];
+        bot.session = bot.session || {};
+        bot.session[userId] = { selectedServer };
 
-        bot.answerCallbackQuery(query.id, {
-            text: `� Creating VPN key for ${selectedServer}... Please wait.`,
-            show_alert: false
+        const hasBalance = await checkBalance(userId);
+
+        if (!hasBalance) {
+            bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
+            return;
+        }
+
+        const bandwidthMenu = subMenus.bandwidth_menu;
+        bot.editMessageText(bandwidthMenu.text, {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: bandwidthMenu.reply_markup
         });
-
-      try {
-    const vpnKeyUrl = await createNewKey(selectedServer, userId);
-    bot.sendMessage(chatId, `✅ VPN key successfully created for ${selectedServer}`);//.\n\n� Your key:\n${vpnKeyUrl}`);
-    bot.sendMessage(chatId, `${vpnKeyUrl}`);	      
-} catch (err) {
-    console.error('❌ Key creation error:', err);
-    bot.sendMessage(chatId, `⚠️ Failed to create VPN key for ${selectedServer}.`);
-}
-
         return;
     }
 
-    // Main VPN submenus
     if (subMenus[data]) {
         const submenu = subMenus[data];
         const text = submenu.text || "Gaming Focused VPN:\n" +
@@ -285,8 +210,6 @@ bot.on('callback_query', async (query) => {
             message_id: messageId,
             reply_markup: submenu.reply_markup
         });
-
-    // Payments submenus
     } else if (paymentsSubMenus[data]) {
         const submenu = paymentsSubMenus[data];
         bot.editMessageText(submenu.text, {
@@ -294,16 +217,12 @@ bot.on('callback_query', async (query) => {
             message_id: messageId,
             reply_markup: submenu.reply_markup
         });
-
-    // Go back to payments main
     } else if (data === 'payments') {
         bot.editMessageText('� Choose a payment method:', {
             chat_id: chatId,
             message_id: messageId,
             ...paymentsMenu
         });
-
-    // Go back to main menu
     } else if (data === 'back_to_main') {
         bot.editMessageText(
             "Protect your privacy with a high-speed VPN built for security, reliability, and ease of use. Our premium servers ensure fast, encrypted connections worldwide—no logs, no limits.\n\nPlease choose your country of residence:",
@@ -313,9 +232,30 @@ bot.on('callback_query', async (query) => {
                 ...mainMenu
             }
         );
+   } else if (data.startsWith('bw_')) {
+    const bandwidthGb = parseInt(data.replace('bw_', ''), 10);
+    const session = bot.session?.[userId];
+    if (!session || !session.selectedServer) {
+        bot.sendMessage(chatId, '❌ Error: No server selected. Please start again.');
+        return;
+    }
 
-    // Leaf node (default handler)
-    } else {
+    const selectedServer = session.selectedServer;
+
+    try {
+        const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
+        bot.sendMessage(chatId, `✅ Your access key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
+    //bot.sendMessage(chatId, '✅ Your access key:');
+    //bot.sendMessage(chatId, newKey);
+    } catch (err) {
+        bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
+    }
+
+    // Clear session after use
+    delete bot.session[userId];
+}
+	    
+     else {
         bot.answerCallbackQuery(query.id, {
             text: 'Option selected!'
         });
