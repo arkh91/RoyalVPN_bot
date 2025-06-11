@@ -115,7 +115,7 @@ async function createNewKey(selectedServer, userId, bandwidthGb = 1) {
         throw new Error(`Missing API URL or key for server: ${selectedServer}`);
     }
 
-    const dataLimitBytes = bandwidthGb * 1024 * 1024 * 1024;
+    const dataLimitBytes = bandwidthGb * 1000 * 1000 * 1024;
 
     try {
         const response = await axios.post(
