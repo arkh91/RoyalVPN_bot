@@ -1,95 +1,7 @@
 const pool = require('../db'); // path to db.js
 const axios = require('axios');
 process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0'; // For testing only
-const servers = require ('../servers');
-
-const DATA_LIMIT_BYTES = 1 * 1024 * 1024 * 1024;
-
-async function createNewKey(selectedServer, userId) {
-    const { apiUrl, apiKey } = servers[selectedServer];
-    if (!apiUrl || !apiKey) {
-        throw new Error(`Missing API URL or key for server: ${selectedServer}`);
-    }
-
-    try {
-        const response = await axios.post(
-            `${apiUrl}/${apiKey}/access-keys`,
-            {},
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-outline-access-key': apiKey,
-                },
-            }
-        );
-
-        if (response.status === 201) {
-            const accessKey = response.data;
-            const timestampName = getTimestampName();
-            const customName = `${selectedServer}_${timestampName}`;
-
-            // Rename key on server
-            await axios.put(
-                `${apiUrl}/${apiKey}/access-keys/${accessKey.id}/name`,
-                { name: customName },
-                {
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'x-outline-access-key': apiKey,
-                    },
-                }
-            );
-
-            // Set 10 GB limit
-            await setKeyLimit(apiUrl, apiKey, accessKey.id);
-
-            const accessUrlWithLabel = `${accessKey.accessUrl}#${customName}`;
-            console.log(`✅ New access key created on ${selectedServer}: ${accessUrlWithLabel}`);
-            console.log(`� Custom name(timestamp): ${customName}`);
-
-            await KeyToDB({
-                userId,
-                fullKey: accessUrlWithLabel,
-                guiKey: `#${customName}`,
-                serverName: selectedServer,
-                //dataLimit: DATA_LIMIT_BYTES,
-                dataLimit: DATA_LIMIT_BYTES / (1024 * 1024 * 1024), // Convert to GB
-		keyNumber: timestampName
-            });
-
-            return accessUrlWithLabel;
-        } else {
-            console.error('❌ Unexpected response:', response.status, response.data);
-            return null;
-        }
-    } catch (error) {
-        handleError(error);
-        throw error;
-    }
-}
-
-async function setKeyLimit(apiUrl, apiKey, keyId) {
-    try {
-        const response = await axios.put(
-            `${apiUrl}/${apiKey}/access-keys/${keyId}/data-limit`,
-            { limit: { bytes: DATA_LIMIT_BYTES } },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-outline-access-key': apiKey,
-                },
-            }
-        );
-
-        if (response.status === 204) {
-            console.log(`� Data limit of 10 GB set for key ID: ${keyId}`);
-        } else {
-            console.error('❌ Failed to set data limit:', response.status, response.data);
-        }
-    } catch (error) {
-        handleError(error);
-    }
-}
+const servers = require('../servers');
 
 function getTimestampName() {
     const now = new Date();
@@ -107,6 +19,29 @@ function handleError(error) {
         console.error('❌ API error:', error.response.status, error.response.data);
     } else {
         console.error('❌ Request error:', error.message);
+    }
+}
+
+async function setKeyLimit(apiUrl, apiKey, keyId, dataLimitBytes) {
+    try {
+        const response = await axios.put(
+            `${apiUrl}/${apiKey}/access-keys/${keyId}/data-limit`,
+            { limit: { bytes: dataLimitBytes } },
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-outline-access-key': apiKey,
+                },
+            }
+        );
+
+        if (response.status === 204) {
+            console.log(`✅ Data limit of ${dataLimitBytes / (1024 * 1024 * 1024)} GB set for key ID: ${keyId}`);
+        } else {
+            console.error('❌ Failed to set data limit:', response.status, response.data);
+        }
+    } catch (error) {
+        handleError(error);
     }
 }
 
@@ -137,16 +72,17 @@ async function KeyToDB({ userId, fullKey, guiKey, serverName, dataLimit, keyNumb
     const issuedAt = new Date();
     const expiredAt = new Date(issuedAt);
     expiredAt.setDate(expiredAt.getDate() + 30);
-console.log('🔍 KeyToDB values:', {
-    userId,
-    fullKey,
-    guiKey,
-    serverName,
-    dataLimit,
-    keyNumber,
-    issuedAt,
-    expiredAt
-});
+
+    console.log('� KeyToDB values:', {
+        userId,
+        fullKey,
+        guiKey,
+        serverName,
+        dataLimit,
+        keyNumber,
+        issuedAt,
+        expiredAt
+    });
 
     const sql = `
         INSERT INTO UserKeys 
@@ -170,6 +106,58 @@ console.log('🔍 KeyToDB values:', {
         console.log('�️ Key saved to database.');
     } catch (err) {
         console.error('❌ Failed to insert key into DB:', err.message);
+    }
+}
+
+async function createNewKey(selectedServer, userId, bandwidthGb = 1) {
+    const { apiUrl, apiKey } = servers[selectedServer];
+    if (!apiUrl || !apiKey) {
+        throw new Error(`Missing API URL or key for server: ${selectedServer}`);
+    }
+
+    const dataLimitBytes = bandwidthGb * 1024 * 1024 * 1024;
+
+    try {
+        const response = await axios.post(
+            `${apiUrl}/${apiKey}/access-keys`,
+            {},
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-outline-access-key': apiKey,
+                },
+            }
+        );
+
+        if (response.status === 201) {
+            const accessKey = response.data;
+            const timestampName = getTimestampName();
+            const customName = `${selectedServer}_${timestampName}`;
+
+            await renameKey(apiUrl, apiKey, accessKey.id, customName);
+            await setKeyLimit(apiUrl, apiKey, accessKey.id, dataLimitBytes);
+
+            const accessUrlWithLabel = `${accessKey.accessUrl}#${customName}`;
+            console.log(`✅ New access key created on ${selectedServer}: ${accessUrlWithLabel}`);
+            console.log(`� Custom name(timestamp): ${customName}`);
+
+            await KeyToDB({
+                userId,
+                fullKey: accessUrlWithLabel,
+                guiKey: `#${customName}`,
+                serverName: selectedServer,
+                dataLimit: bandwidthGb,
+                keyNumber: timestampName
+            });
+
+            return accessUrlWithLabel;
+        } else {
+            console.error('❌ Unexpected response:', response.status, response.data);
+            return null;
+        }
+    } catch (error) {
+        handleError(error);
+        throw error;
     }
 }
 
