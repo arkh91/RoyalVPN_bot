@@ -1,7 +1,9 @@
 const pool = require('../db'); // path to db.js
 const axios = require('axios');
-process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0'; // For testing only
 const servers = require('../servers');
+const flags = require('./flags');
+
+process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0'; // For local/test only
 
 function getTimestampName() {
     const now = new Date();
@@ -36,20 +38,27 @@ async function setKeyLimit(apiUrl, apiKey, keyId, dataLimitBytes) {
         );
 
         if (response.status === 204) {
-            console.log(`✅ Data limit of ${dataLimitBytes / (1000 * 1000 * 1024)} GB set for key ID: ${keyId}`);
+            console.log(`✅ Data limit set to ${dataLimitBytes / 1024 ** 3} GB for key ${keyId}`);
         } else {
-            console.error('❌ Failed to set data limit:', response.status, response.data);
+            console.warn('⚠️ Unexpected response during limit set:', response.status);
         }
     } catch (error) {
         handleError(error);
     }
 }
 
-async function renameKey(apiUrl, apiKey, keyId, customName) {
+async function renameKey(apiUrl, apiKey, keyId, baseName) {
     try {
+        // Match flag by prefix (case-insensitive)
+        const prefix = Object.keys(flags).find(key =>
+            baseName.toUpperCase().startsWith(key.toUpperCase())
+        );
+        const flag = prefix ? ` ${flags[prefix]}` : '';
+        const renamed = baseName + flag;
+
         const response = await axios.put(
             `${apiUrl}/${apiKey}/access-keys/${keyId}/name`,
-            { name: customName },
+            { name: renamed },
             {
                 headers: {
                     'Content-Type': 'application/json',
@@ -59,30 +68,22 @@ async function renameKey(apiUrl, apiKey, keyId, customName) {
         );
 
         if (response.status === 204) {
-            console.log(`✏️  Key ${keyId} renamed to "${customName}"`);
+            console.log(`✏️  Key ${keyId} renamed to "${renamed}"`);
+            return renamed;
         } else {
-            console.warn('⚠️ Unexpected response during rename:', response.status);
+            console.warn('⚠️ Rename responded with:', response.status);
+            return baseName;
         }
     } catch (error) {
-        console.error('❌ Rename failed:', error.response?.data || error.message);
+        handleError(error);
+        return baseName;
     }
 }
 
-async function KeyToDB({ userId, fullKey, guiKey, serverName, dataLimit, keyNumber }) {
+async function saveKeyToDB({ userId, fullKey, guiKey, serverName, dataLimit, keyNumber }) {
     const issuedAt = new Date();
     const expiredAt = new Date(issuedAt);
     expiredAt.setDate(expiredAt.getDate() + 30);
-
-    console.log('� KeyToDB values:', {
-        userId,
-        fullKey,
-        guiKey,
-        serverName,
-        dataLimit,
-        keyNumber,
-        issuedAt,
-        expiredAt
-    });
 
     const sql = `
         INSERT INTO UserKeys 
@@ -103,19 +104,19 @@ async function KeyToDB({ userId, fullKey, guiKey, serverName, dataLimit, keyNumb
 
     try {
         await pool.execute(sql, values);
-        console.log('�️ Key saved to database.');
+        console.log('� Key saved to database.');
     } catch (err) {
-        console.error('❌ Failed to insert key into DB:', err.message);
+        console.error('❌ Failed to save key to DB:', err.message);
     }
 }
 
 async function createNewKey(selectedServer, userId, bandwidthGb = 1) {
     const { apiUrl, apiKey } = servers[selectedServer];
     if (!apiUrl || !apiKey) {
-        throw new Error(`Missing API URL or key for server: ${selectedServer}`);
+        throw new Error(`Missing API credentials for server: ${selectedServer}`);
     }
 
-    const dataLimitBytes = bandwidthGb * 1000 * 1000 * 1024;
+    const dataLimitBytes = bandwidthGb * 1024 * 1024 * 1000;
 
     try {
         const response = await axios.post(
@@ -129,32 +130,31 @@ async function createNewKey(selectedServer, userId, bandwidthGb = 1) {
             }
         );
 
-        if (response.status === 201) {
-            const accessKey = response.data;
-            const timestampName = getTimestampName();
-            const customName = `${selectedServer}_${timestampName}`;
-
-            await renameKey(apiUrl, apiKey, accessKey.id, customName);
-            await setKeyLimit(apiUrl, apiKey, accessKey.id, dataLimitBytes);
-
-            const accessUrlWithLabel = `${accessKey.accessUrl}#${customName}`;
-            console.log(`✅ New access key created on ${selectedServer}: ${accessUrlWithLabel}`);
-            console.log(`� Custom name(timestamp): ${customName}`);
-
-            await KeyToDB({
-                userId,
-                fullKey: accessUrlWithLabel,
-                guiKey: `#${customName}`,
-                serverName: selectedServer,
-                dataLimit: bandwidthGb,
-                keyNumber: timestampName
-            });
-
-            return accessUrlWithLabel;
-        } else {
-            console.error('❌ Unexpected response:', response.status, response.data);
+        if (response.status !== 201) {
+            console.error('❌ Failed to create key:', response.status);
             return null;
         }
+
+        const accessKey = response.data;
+        const timestamp = getTimestampName();
+        const baseName = `${selectedServer}_${timestamp}`;
+
+        const renamed = await renameKey(apiUrl, apiKey, accessKey.id, baseName);
+        await setKeyLimit(apiUrl, apiKey, accessKey.id, dataLimitBytes);
+
+        const accessUrlWithLabel = `${accessKey.accessUrl}#${renamed}`;
+        console.log(`✅ New access key created: ${accessUrlWithLabel}`);
+
+        await saveKeyToDB({
+            userId,
+            fullKey: accessUrlWithLabel,
+            guiKey: `#${renamed}`,
+            serverName: selectedServer,
+            dataLimit: bandwidthGb,
+            keyNumber: timestamp
+        });
+
+        return accessUrlWithLabel;
     } catch (error) {
         handleError(error);
         throw error;
