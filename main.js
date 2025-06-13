@@ -2,6 +2,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const insertUser = require('./db/insertUser');
 const insertVisit = require('./db/insertVisit');
 const { createNewKey } = require('./db/KeyCreation');
+const checkBalance = require('./checkBalance');
 const { getKeyStatusResponseMessage } = require('./KeyStatus');
 const token = '';
 
@@ -85,10 +86,16 @@ const subMenus = {
         }
     }
 };
-
+/*
 async function checkBalance(userId) {
     return true; // Replace with actual DB logic later
 }
+*/
+(async () => {
+    const result = await checkBalance(123456);
+    console.log('Balance check result:', result);
+})();
+
 
 bot.onText(/\/start/, async (msg) => {
     try {
@@ -129,14 +136,34 @@ bot.onText(/\/payment/, (msg) => {
     });
 });
 
-bot.onText(/\/ps/, (msg) => {
-    const chatId = msg.chat.id;
-    bot.sendMessage(chatId, '� This section is under development.', {
-        reply_markup: {
-            inline_keyboard: [[{ text: '� Go Back', callback_data: 'back_to_main' }]]
-        }
-    });
+bot.onText(/\/balance/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  try {
+    const balance = await checkBalance(userId);
+    if (balance === null) {
+      await bot.sendMessage(chatId, '⚠️ Your account was not found.');
+    } else {
+      await bot.sendMessage(chatId, 
+  `💰 *Your Current Balance:* \`${balance} USD\`\n\nTo make a payment, simply type /payment or select it from the menu below.`,
+  {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔙 Go Back', callback_data: 'back_to_main' }]
+      ]
+    }
+  }
+);
+
+    }
+  } catch (err) {
+    await bot.sendMessage(chatId, '❌ An error occurred while checking your balance.');
+    console.error('Balance check error:', err);
+  }
 });
+
 
 bot.onText(/\/KeyStatus/, (msg) => {
     const chatId = msg.chat.id;
@@ -260,4 +287,16 @@ bot.on('callback_query', async (query) => {
             text: 'Option selected!'
         });
     }
+
+/*
+  if (data === 'trigger_payment') {
+    // Reuse the same logic as /payment
+    await bot.sendMessage(chatId, '💳 This section is under development.', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '🔙 Go Back', callback_data: 'back_to_main' }]]
+      }
+    });
+  }*/
+
+
 });
