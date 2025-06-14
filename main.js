@@ -4,7 +4,10 @@ const insertVisit = require('./db/insertVisit');
 const { createNewKey } = require('./db/KeyCreation');
 const checkBalance = require('./checkBalance');
 const { getKeyStatusResponseMessage } = require('./KeyStatus');
-const token = '';
+const checkEligible = require ('./checkEligibility');
+
+const token = '8089450002:AAEu0OPtaoNAmIrxnzLtLhYU9arPspxPFVE';
+
 
 const { paymentsMenu, paymentsSubMenus } = require('./payments');
 const waitingForKey = new Set();
@@ -210,12 +213,6 @@ bot.on('callback_query', async (query) => {
         bot.session = bot.session || {};
         bot.session[userId] = { selectedServer };
 
-        const hasBalance = await checkBalance(userId);
-
-        if (!hasBalance) {
-            bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
-            return;
-        }
 
         const bandwidthMenu = subMenus.bandwidth_menu;
         bot.editMessageText(bandwidthMenu.text, {
@@ -269,14 +266,27 @@ bot.on('callback_query', async (query) => {
 
     const selectedServer = session.selectedServer;
 
-    try {
-        const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
-        bot.sendMessage(chatId, `✅ Your access key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
-    //bot.sendMessage(chatId, '✅ Your access key:');
-    //bot.sendMessage(chatId, newKey);
-    } catch (err) {
-        bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
-    }
+	try {
+	//	const username = msg.from.username;
+     		const eligible = await checkEligible(userId, chatId, bot);
+		const hasBalance = await checkBalance(userId);
+	
+	    if (!eligible && !hasBalance) {
+	        bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
+	        return; // Stop here if not eligible and no balance
+	    }
+	
+	    if (eligible) {
+	        bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
+	    }
+	
+	    const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
+	    bot.sendMessage(chatId, `✅ Your access key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
+	
+	} catch (err) {
+	    bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
+	}
+
 
     // Clear session after use
     delete bot.session[userId];
