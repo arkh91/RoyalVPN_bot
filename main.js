@@ -6,7 +6,7 @@ const checkBalance = require('./checkBalance');
 const { getKeyStatusResponseMessage } = require('./KeyStatus');
 const checkEligible = require ('./checkEligibility');
 
-const token = '8089450002:AAEu0OPtaoNAmIrxnzLtLhYU9arPspxPFVE';
+const token = '';
 
 
 const { paymentsMenu, paymentsSubMenus } = require('./payments');
