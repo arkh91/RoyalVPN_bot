@@ -51,6 +51,16 @@ const subMenus = {
             ]
         }
     },
+    game_arena: {
+        text: '🎮 Arena Breakout – Select your package:',
+        reply_markup: {
+		inline_keyboard: [
+                	[{ text: '25 GB – $0.99', callback_data: 'arena_25gb' }],
+                	[{ text: '50 GB – $1.89', callback_data: 'arena_50gb' }],
+            		[{ text: '⬅️ Go Back', callback_data: 'sub_1_game' }]
+        	]
+	}
+    },	
     sub_1_speed: {
         text: '⚡ Choose a high-speed location for fast and secure internet:',
         reply_markup: {
@@ -213,33 +223,6 @@ bot.on('callback_query', async (query) => {
         bot.session = bot.session || {};
         bot.session[userId] = { selectedServer };
 
-//        const hasBalance = await checkBalance(userId);
-//	const eligible = await checkEligible(userId);
-/*
-        if (!hasBalance) {
-            bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
-            return;
-	}
-	if (eligible){
-	   bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
-	}
-*/
-
-	/*    
-	if (eligible) {
-    bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
-} else if(!hasBalance) {
-    bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
-    return; // Stop execution here — no access key is sent
-}*/
-
-	    /*
-	if (eligible) {
-    bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
-} else if (!hasBalance) {
-    bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
-}*/
-
 
         const bandwidthMenu = subMenus.bandwidth_menu;
         bot.editMessageText(bandwidthMenu.text, {
@@ -292,16 +275,6 @@ bot.on('callback_query', async (query) => {
     }
 
     const selectedServer = session.selectedServer;
-/*
-    try {
-        const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
-        bot.sendMessage(chatId, `✅ Your access key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
-    //bot.sendMessage(chatId, '✅ Your access key:');
-    //bot.sendMessage(chatId, newKey);
-    } catch (err) {
-        bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
-    }
-*/
 	try {
 	//	const username = msg.from.username;
      const eligible = await checkEligible(userId, chatId, bot);
@@ -333,16 +306,6 @@ const hasBalance = await checkBalance(userId);
             text: 'Option selected!'
         });
     }
-
-/*
-  if (data === 'trigger_payment') {
-    // Reuse the same logic as /payment
-    await bot.sendMessage(chatId, '💳 This section is under development.', {
-      reply_markup: {
-        inline_keyboard: [[{ text: '🔙 Go Back', callback_data: 'back_to_main' }]]
-      }
-    });
-  }*/
 
 
 });
