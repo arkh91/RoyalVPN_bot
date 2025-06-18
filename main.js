@@ -122,10 +122,10 @@ bot.onText(/\/userid/, (msg) => {
     const firstName = msg.from.first_name || '';
     const lastName = msg.from.last_name || '';
 
-    const message = `� *User Information*\n\n` +
-        `� *User ID:* \`${userId}\`\n` +
-        `� *Username:* @${username}\n` +
-        `� *Full Name:* ${firstName} ${lastName}`.trim();
+    const message = `👤 *User Information*\n\n` +
+    `🆔 *User ID:* \`${userId}\`\n` +
+    `🔖 *Username:* @${username}\n` +
+    `📛 *Full Name:* ${firstName} ${lastName}`.trim();
 
     bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 });
@@ -213,6 +213,33 @@ bot.on('callback_query', async (query) => {
         bot.session = bot.session || {};
         bot.session[userId] = { selectedServer };
 
+//        const hasBalance = await checkBalance(userId);
+//	const eligible = await checkEligible(userId);
+/*
+        if (!hasBalance) {
+            bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
+            return;
+	}
+	if (eligible){
+	   bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
+	}
+*/
+
+	/*    
+	if (eligible) {
+    bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
+} else if(!hasBalance) {
+    bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
+    return; // Stop execution here — no access key is sent
+}*/
+
+	    /*
+	if (eligible) {
+    bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
+} else if (!hasBalance) {
+    bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
+}*/
+
 
         const bandwidthMenu = subMenus.bandwidth_menu;
         bot.editMessageText(bandwidthMenu.text, {
@@ -265,27 +292,36 @@ bot.on('callback_query', async (query) => {
     }
 
     const selectedServer = session.selectedServer;
-
+/*
+    try {
+        const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
+        bot.sendMessage(chatId, `✅ Your access key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
+    //bot.sendMessage(chatId, '✅ Your access key:');
+    //bot.sendMessage(chatId, newKey);
+    } catch (err) {
+        bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
+    }
+*/
 	try {
 	//	const username = msg.from.username;
-     		const eligible = await checkEligible(userId, chatId, bot);
-		const hasBalance = await checkBalance(userId);
-	
-	    if (!eligible && !hasBalance) {
-	        bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
-	        return; // Stop here if not eligible and no balance
-	    }
-	
-	    if (eligible) {
-	        bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
-	    }
-	
-	    const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
-	    bot.sendMessage(chatId, `✅ Your access key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
-	
-	} catch (err) {
-	    bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
-	}
+     const eligible = await checkEligible(userId, chatId, bot);
+const hasBalance = await checkBalance(userId);
+
+    if (!eligible && !hasBalance) {
+        bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
+        return; // Stop here if not eligible and no balance
+    }
+
+    if (eligible) {
+        bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
+    }
+
+    const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
+    bot.sendMessage(chatId, `✅ Your access key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
+
+} catch (err) {
+    bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
+}
 
 
     // Clear session after use
