@@ -5,6 +5,8 @@ const { createNewKey } = require('./db/KeyCreation');
 const checkBalance = require('./checkBalance');
 const { getKeyStatusResponseMessage } = require('./KeyStatus');
 const checkEligible = require ('./checkEligibility');
+const Game_Arena_checkEligible = require ('./Game_Arena_checkEligibility');
+
 
 const token = '';
 
@@ -203,12 +205,12 @@ bot.on('message', async (msg) => {
 const callbackToServer = {
     speed_ger: 'Ger',
     speed_sweden: 'Sweden82',
-    speed_sp: 'Spain',
+    speed_sp: 'Sp01',
     speed_ir: 'IRAN',
     speed_it: 'IT01',
-    speed_tur: 'TUR14',
+    speed_tur: 'Tur14',
     speed_usa: 'US08',
-    speed_uk: 'UK36'
+    speed_uk: 'UK37'
 };
 
 bot.on('callback_query', async (query) => {
@@ -299,7 +301,57 @@ const hasBalance = await checkBalance(userId);
 
     // Clear session after use
     delete bot.session[userId];
-}
+}else if (data === 'arena_25gb') {
+        const selectedServer = 'IT01';
+    const bandwidthGb = 25;
+
+    try {
+        const Arena_checkEligible = await Game_Arena_checkEligible(userId, chatId, bot);
+        const hasBalance = await checkBalance(userId);
+
+        if (!Arena_checkEligible && !hasBalance) {
+            bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
+            return;
+        }
+
+        if (Arena_checkEligible) {
+            bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
+        }
+
+        const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
+        bot.sendMessage(chatId, `✅ Your 25GB Arena key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
+
+    } catch (err) {
+        bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
+    }
+        //bot.sendMessage(chatId, '✅ You selected 25 GB for Arena Breakout at $0.99.');
+    }
+
+    else if (data === 'arena_50gb') {
+        const selectedServer = 'IT01';
+    const bandwidthGb = 50;
+
+    try {
+        const Arena_checkEligible = await Game_Arena_checkEligible(userId, chatId, bot);
+        const hasBalance = await checkBalance(userId);
+
+        if (!Arena_checkEligible && !hasBalance) {
+            bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
+            return;
+        }
+
+        if (Arena_checkEligible) {
+            bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
+        }
+
+        const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
+        bot.sendMessage(chatId, `✅ Your 50GB Arena key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
+
+    } catch (err) {
+        bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
+    }
+        //bot.sendMessage(chatId, '✅ You selected 50 GB for Arena Breakout at $1.89.');
+    }
 	    
      else {
         bot.answerCallbackQuery(query.id, {
