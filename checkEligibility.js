@@ -8,9 +8,14 @@ async function checkEligibility(userId, chatId, bot) {
         //console.log(`[checkEligibility] User is eligible (VIP)`);
         bot.sendMessage(chatId, `✅ Welcome Dear Arkh91.`);
         return true;
+//    }else if (chatId === 535843169 ) {
+  //      //console.log(`[checkEligibility] User is eligible (VIP)`);
+    //    bot.sendMessage(chatId, `✅ Welcome Dear Nezhade.`);
+     //   return true;
     }
 
-    console.log(`[checkEligibility] User is NOT eligible`);
+
+    //console.log(`[checkEligibility] User is NOT eligible`);
     return false;
 }
 
