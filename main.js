@@ -144,9 +144,9 @@ bot.onText(/\/userid/, (msg) => {
 
 bot.onText(/\/payment/, (msg) => {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId, '� This section is under development.', {
+    bot.sendMessage(chatId, '⚒️ This section is under development.', {
         reply_markup: {
-            inline_keyboard: [[{ text: '� Go Back', callback_data: 'back_to_main' }]]
+            inline_keyboard: [[{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]]
         }
     });
 });
