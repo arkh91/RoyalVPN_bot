@@ -1,3 +1,4 @@
+const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const insertUser = require('./db/insertUser');
 const insertVisit = require('./db/insertVisit');
@@ -6,9 +7,21 @@ const checkBalance = require('./checkBalance');
 const { getKeyStatusResponseMessage } = require('./KeyStatus');
 const checkEligible = require ('./checkEligibility');
 const Game_Arena_checkEligible = require ('./Game_Arena_checkEligibility');
+//const webhookRoutes = require('./webhook');
+const getUserBalance = require('./db/getUserBalance'); // adjust path as needed
+const deductBalance = require('./db/deductBalance');   // same here
 
 
 const token = '';
+//const token = ';
+//const { TELEGRAM_BOT_TOKEN } = require('./token');
+const { NOWPAYMENTS_API_KEY } = require('./token');
+
+const createNowPaymentsSession = require('./createNowPaymentsSession');
+
+//const app = express();
+//app.use(express.json());
+//app.use('/', webhookRoutes);
 
 
 const { paymentsMenu, paymentsSubMenus } = require('./payments');
@@ -21,6 +34,10 @@ const bot = new TelegramBot(token, {
         params: { timeout: 10 }
     }
 });
+
+// Export for use in webhook.js
+//module.exports = bot;
+
 
 const mainMenu = {
     reply_markup: {
@@ -91,11 +108,11 @@ const subMenus = {
         text: 'Select the 30-day Outline bandwidth limit:',
         reply_markup: {
             inline_keyboard: [
-                [{ text: '50 GB / 0.99 USD', callback_data: 'bw_50' }],
-                [{ text: '100 GB / 1.99 USD', callback_data: 'bw_100' }],
-                [{ text: '300 GB / 5.99 USD', callback_data: 'bw_300' }],
-                [{ text: '500 GB / 9.99 USD', callback_data: 'bw_500' }],
-                [{ text: '1000 GB / 19.99 USD', callback_data: 'bw_1000' }],
+                [{ text: '50 GB / 1.29 USD', callback_data: 'bw_50' }],
+                [{ text: '100 GB / 2.33 USD', callback_data: 'bw_100' }],
+                [{ text: '300 GB / 5.60 USD', callback_data: 'bw_300' }],
+                [{ text: '500 GB / 9.30 USD', callback_data: 'bw_500' }],
+                [{ text: '1000 GB / 16.99 USD', callback_data: 'bw_1000' }],
                 [{ text: '⬅️ Go Back', callback_data: 'sub_1_speed' }]
             ]
         }
@@ -144,12 +161,19 @@ bot.onText(/\/userid/, (msg) => {
 
 bot.onText(/\/payment/, (msg) => {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId, '⚒️ This section is under development.', {
+
+    bot.sendMessage(chatId, '💳 Please choose a payment method:', {
         reply_markup: {
-            inline_keyboard: [[{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]]
+            inline_keyboard: [
+                [{ text: 'Direct (Credit Card)', callback_data: 'pay_direct' }],
+                [{ text: 'Digital Currency', callback_data: 'pay_nowpayment' }],
+                [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
+            ]
         }
     });
 });
+
+
 
 bot.onText(/\/balance/, async (msg) => {
   const chatId = msg.chat.id;
@@ -212,69 +236,82 @@ const callbackToServer = {
     speed_usa: 'US08',
     speed_uk: 'UK37'
 };
-
+/*
+const bandwidthPrices = {
+    50: 1.29,
+    100: 2.33,
+    300: 5.60,
+    500: 9.30,
+    1000: 16.99
+};
+*/
+    	
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
     const data = query.data;
-    const userId = query.message.from.id;
+    const userId = query.from.id;
 
+    // SESSION SETUP FOR BANDWIDTH MENU
     const bandwidthCountries = ['speed_sweden', 'speed_sp', 'speed_it', 'speed_tur', 'speed_usa', 'speed_uk'];
     if (bandwidthCountries.includes(data)) {
         const selectedServer = callbackToServer[data];
         bot.session = bot.session || {};
         bot.session[userId] = { selectedServer };
 
-
         const bandwidthMenu = subMenus.bandwidth_menu;
-        bot.editMessageText(bandwidthMenu.text, {
+        return bot.editMessageText(bandwidthMenu.text, {
             chat_id: chatId,
             message_id: messageId,
             reply_markup: bandwidthMenu.reply_markup
         });
-        return;
     }
 
+    // SUBMENUS HANDLING
     if (subMenus[data]) {
         const submenu = subMenus[data];
-        const text = submenu.text || "Gaming Focused VPN:\n" +
-            "Level up your gaming with our VPN—reduce ping, bypass geo-restrictions, and stay secure on any server. Say goodbye to lag and throttling; play smoothly, no matter where you are.\n\n" +
-            "High Speed VPN:\n" +
-            "Protect your privacy with our high-quality VPN—lightning-fast, ultra-secure, and trusted by professionals worldwide. Enjoy unrestricted access to the web with military-grade encryption and zero logs.\n\n";
-        bot.editMessageText(text, {
+        const text = submenu.text || `Gaming Focused VPN:\nLevel up your gaming with our VPN—reduce ping, bypass geo-restrictions, and stay secure on any server.\n\nHigh Speed VPN:\nProtect your privacy with our high-quality VPN—lightning-fast, ultra-secure, and trusted by professionals worldwide.`;
+        return bot.editMessageText(text, {
             chat_id: chatId,
             message_id: messageId,
             reply_markup: submenu.reply_markup
         });
-    } else if (paymentsSubMenus[data]) {
+    }
+
+    // PAYMENTS MAIN MENU
+    if (data === 'payments') {
+        return bot.editMessageText(paymentsMenu.text, {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: paymentsMenu.reply_markup
+        });
+    }
+
+    // SPECIFIC PAYMENT SUBMENUS
+    if (paymentsSubMenus[data]) {
         const submenu = paymentsSubMenus[data];
-        bot.editMessageText(submenu.text, {
+        return bot.editMessageText(submenu.text, {
             chat_id: chatId,
             message_id: messageId,
             reply_markup: submenu.reply_markup
         });
-    } else if (data === 'payments') {
-        bot.editMessageText('� Choose a payment method:', {
-            chat_id: chatId,
-            message_id: messageId,
-            ...paymentsMenu
-        });
-    } else if (data === 'back_to_main') {
-        bot.editMessageText(
-            "Protect your privacy with a high-speed VPN built for security, reliability, and ease of use. Our premium servers ensure fast, encrypted connections worldwide—no logs, no limits.\n\nPlease choose your country of residence:",
+    }
+
+    // BACK TO MAIN MENU
+    if (data === 'back_to_main') {
+        return bot.editMessageText(
+            `Protect your privacy with a high-speed VPN built for security, reliability, and ease of use.\n\nPlease choose your country of residence:`,
             {
                 chat_id: chatId,
                 message_id: messageId,
-                ...mainMenu
+                reply_markup: mainMenu.reply_markup
             }
         );
-   } else if (data.startsWith('bw_')) {
-    const bandwidthGb = parseInt(data.replace('bw_', ''), 10);
-    const session = bot.session?.[userId];
-    if (!session || !session.selectedServer) {
-        bot.sendMessage(chatId, '❌ Error: No server selected. Please start again.');
-        return;
     }
+
+  /*  // BANDWIDTH PURCHASE FLOW
+    if (data.startsWith('bw_')) {
+        
 
     const selectedServer = session.selectedServer;
 	try {
@@ -294,70 +331,244 @@ const hasBalance = await checkBalance(userId);
     const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
     bot.sendMessage(chatId, `✅ Your access key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
 
-} catch (err) {
-    bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
+*/
+if (data.startsWith('bw_')) {
+    const bandwidthGb = parseInt(data.replace('bw_', ''), 10);
+
+    const bandwidthPrices = {
+        50: 1.29,
+        100: 2.33,
+        300: 5.60,
+        500: 9.30,
+        1000: 16.99
+    };
+
+    const requiredAmount = bandwidthPrices[bandwidthGb];
+    const session = bot.session?.[userId];
+
+    if (!session || !session.selectedServer) {
+        await bot.sendMessage(chatId, '❌ Error: No server selected. Please start again.');
+        return;
+    }
+
+    const selectedServer = session.selectedServer;
+
+    try {
+        const eligible = await checkEligible(userId, chatId, bot);
+        const balanceValue = await getUserBalance(userId); // Should return number (e.g. 3.50)
+
+        console.log(`User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Required: $${requiredAmount}`);
+
+        // Block if not VIP and not enough balance
+        if (!eligible && balanceValue < requiredAmount) {
+            await bot.sendMessage(
+                chatId,
+                `❌ You need at least $${requiredAmount.toFixed(2)} to buy ${bandwidthGb} GB.\nYour current balance: $${balanceValue.toFixed(2)}.\n\nUse /payment to top up.`
+            );
+            return;
+        }
+
+        // Inform VIP users
+        if (eligible) {
+            await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
+        }
+
+        // Create key
+        const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
+        await bot.sendMessage(chatId, `✅ Your access key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
+
+        // Deduct balance only for non-VIP
+        if (!eligible) {
+            await deductBalance(userId, requiredAmount);
+            await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
+        }
+
+    } catch (err) {
+        console.error('❌ Error in bandwidth purchase:', err);
+        await bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
+    }
+
+    // Cleanup
+    delete bot.session[userId];
+    return;
 }
 
 
-    // Clear session after use
-    delete bot.session[userId];
-}else if (data === 'arena_25gb') {
+    /*/ ARENA 25GB & 50GB FLOW
+    if (data === 'arena_25gb' || data === 'arena_50gb') {
+        const bandwidthGb = data === 'arena_25gb' ? 25 : 50;
         const selectedServer = 'IT01';
-    const bandwidthGb = 25;
+
+        try {
+            const eligible = await Game_Arena_checkEligible(userId, chatId, bot);
+            const hasBalance = await checkBalance(userId);
+
+            if (!eligible && !hasBalance) {
+                return bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
+            }
+
+            if (eligible) {
+                await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
+            }
+
+            const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
+            await bot.sendMessage(chatId, `✅ Your ${bandwidthGb}GB Arena key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
+        } catch (err) {
+            await bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
+        }
+
+        return;
+    }*/
+
+
+if (data === 'arena_25gb' || data === 'arena_50gb') {
+    const bandwidthGb = data === 'arena_25gb' ? 25 : 50;
+    const selectedServer = 'IT01';
+
+    // Define Arena pricing
+    const arenaPrices = {
+        25: 0.99,  // Adjust these prices as needed
+        50: 1.89
+    };
+
+    const requiredAmount = arenaPrices[bandwidthGb];
 
     try {
-        const Arena_checkEligible = await Game_Arena_checkEligible(userId, chatId, bot);
-        const hasBalance = await checkBalance(userId);
+        const eligible = await Game_Arena_checkEligible(userId, chatId, bot);
+        const balanceValue = await getUserBalance(userId); // Should return number like 3.75
 
-        if (!Arena_checkEligible && !hasBalance) {
-            bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
+        console.log(`Arena | User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Needs: $${requiredAmount}`);
+
+        // Block if not eligible and not enough balance
+        if (!eligible && balanceValue < requiredAmount) {
+            await bot.sendMessage(
+                chatId,
+                `❌ You need at least $${requiredAmount.toFixed(2)} to get ${bandwidthGb}GB Arena access.\nYour current balance: $${balanceValue.toFixed(2)}.\nUse /payment to top up.`
+            );
             return;
         }
 
-        if (Arena_checkEligible) {
-            bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
+        if (eligible) {
+            await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive Arena access.`);
         }
 
+        // Create the key
         const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
-        bot.sendMessage(chatId, `✅ Your 25GB Arena key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
+        await bot.sendMessage(chatId, `✅ Your ${bandwidthGb}GB Arena key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
+
+        // Deduct balance only for non-VIP
+        if (!eligible) {
+            await deductBalance(userId, requiredAmount);
+            await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
+        }
 
     } catch (err) {
-        bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
+        console.error('❌ Arena purchase error:', err);
+        await bot.sendMessage(chatId, `❌ Failed to create Arena key: ${err.message}`);
     }
-        //bot.sendMessage(chatId, '✅ You selected 25 GB for Arena Breakout at $0.99.');
-    }
 
-    else if (data === 'arena_50gb') {
-        const selectedServer = 'IT01';
-    const bandwidthGb = 50;
+    return;
+}
 
-    try {
-        const Arena_checkEligible = await Game_Arena_checkEligible(userId, chatId, bot);
-        const hasBalance = await checkBalance(userId);
-
-        if (!Arena_checkEligible && !hasBalance) {
-            bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
-            return;
-        }
-
-        if (Arena_checkEligible) {
-            bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
-        }
-
-        const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
-        bot.sendMessage(chatId, `✅ Your 50GB Arena key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
-
-    } catch (err) {
-        bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
-    }
-        //bot.sendMessage(chatId, '✅ You selected 50 GB for Arena Breakout at $1.89.');
-    }
-	    
-     else {
-        bot.answerCallbackQuery(query.id, {
-            text: 'Option selected!'
+    // NOWPAYMENT → DOGECOIN SUBMENUS
+    if (data === 'pay_nowpayment') {
+        return bot.editMessageText('🪙 Choose a cryptocurrency:', {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: 'Dogecoin (DOGE)', callback_data: 'pay_doge' }],
+                    [{ text: '⬅️ Go Back', callback_data: 'back_to_payment' }]
+                ]
+            }
         });
     }
 
+    if (data === 'pay_doge') {
+        return bot.editMessageText('🔗 Choose the Dogecoin network:', {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: 'Dogecoin (DOGE)', callback_data: 'doge_network_native' }],
+                    [{ text: '⬅️ Go Back', callback_data: 'pay_nowpayment' }]
+                ]
+            }
+        });
+    }
 
+    if (data === 'doge_network_native') {
+        return bot.editMessageText('💰 Choose the amount to pay in USD:', {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        //{ text: '$1', callback_data: 'doge_pay_1' },
+                        { text: '$2', callback_data: 'doge_pay_2' },
+                        { text: '$5', callback_data: 'doge_pay_5' }
+                    ],
+                    [
+                        { text: '$10', callback_data: 'doge_pay_10' },
+                        { text: '$20', callback_data: 'doge_pay_20' }
+                    ],
+                    [
+                        { text: '$50', callback_data: 'doge_pay_50' },
+                        { text: '$100', callback_data: 'doge_pay_100' }
+                    ],
+                    [{ text: '⬅️ Go Back', callback_data: 'pay_doge' }]
+                ]
+            }
+        });
+    }
+
+    if (data.startsWith('doge_pay_')) {
+        const amount = data.replace('doge_pay_', '');
+        const currency = 'DOGE';
+
+        try {
+            // Edit the original message
+            await bot.editMessageText(`🪙 Generating Dogecoin payment session for $${amount}`, {
+                chat_id: chatId,
+                message_id: messageId
+            });
+
+            // Generate payment session
+            const paymentUrl = await createNowPaymentsSession(chatId, amount, currency);
+
+            if (paymentUrl) {
+                await bot.sendMessage(chatId, `✅ Click the link below to pay with Dogecoin:\n\n${paymentUrl}`);
+            } else {
+                await bot.sendMessage(chatId, '❌ Failed to create payment session. Please try again later.');
+            }
+        } catch (err) {
+            console.error('❌ Error handling Dogecoin payment:', err);
+            await bot.sendMessage(chatId, '⚠️ An error occurred while generating your Dogecoin payment link.');
+        }
+    }
+
+
+    if (data === 'back_to_payment') {
+        return bot.editMessageText('💳 Please choose a payment method:', {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: 'Direct (Credit Card)', callback_data: 'pay_direct' }],
+                    [{ text: 'NowPayment (Digital Currency)', callback_data: 'pay_nowpayment' }],
+                    [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
+                ]
+            }
+        });
+    }
+
+    // DEFAULT FALLBACK
+    return bot.answerCallbackQuery(query.id, {
+        text: '✅ Option selected.'
+    });
 });
+
+// Start Express server
+//app.listen(3000, () => {
+    //console.log('� Express server running on port 3000');
+//});
