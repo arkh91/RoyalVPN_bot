@@ -1,4 +1,7 @@
 const axios = require('axios');
+const { NOWPAYMENTS_API_KEY } = require('./token');
+
+
 
 async function createNowPaymentsSession(chatId, amountUSD, currency, orderId = null) {
     try {
@@ -7,7 +10,7 @@ async function createNowPaymentsSession(chatId, amountUSD, currency, orderId = n
             price_currency: 'usd',
             pay_currency: currency,
             order_id: orderId || `order_${chatId}_${Date.now()}`,
-            ipn_callback_url: 'https://your-server.com/ipn-handler', // Optional
+            //ipn_callback_url: 'https://your-server.com/ipn-handler', // Optional
         };
 
         const response = await axios.post('https://api.nowpayments.io/v1/invoice', payload, {
