@@ -1,3 +1,4 @@
+//main
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const insertUser = require('./db/insertUser');
@@ -12,10 +13,11 @@ const getUserBalance = require('./db/getUserBalance'); // adjust path as needed
 const deductBalance = require('./db/deductBalance');   // same here
 
 
+//const token = '';
 const token = '';
-//const token = ';
 //const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
+//const NOWPAYMENTS_API_KEY = '4PPCTPB-385MXPM-N5DBCGX-KV64DPY';
 
 const createNowPaymentsSession = require('./createNowPaymentsSession');
 
@@ -44,7 +46,7 @@ const mainMenu = {
         inline_keyboard: [
             [{ text: 'IRAN🇮🇷', callback_data: 'menu_1' }],
             [{ text: 'Russia🇷🇺', callback_data: 'menu_1' }],
-            [{ text: 'India🇮🇳', callback_data: 'menu_1' }]
+            [{ text: 'International 🌐', callback_data: 'sub_INT_speed' }]
         ]
     }
 };
@@ -116,7 +118,42 @@ const subMenus = {
                 [{ text: '⬅️ Go Back', callback_data: 'sub_1_speed' }]
             ]
         }
-    }
+    },
+    /*menu_INT: {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: 'Game', callback_data: 'sub_1_game' }],
+                [{ text: 'High Speed', callback_data: 'sub_1_speed' }],
+                [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
+            ]
+        }
+    },*/
+    sub_INT_speed: {
+        text: '⚡ Choose a high-speed location for fast and secure internet:',
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    { text: 'Germany (soon)', callback_data: 'speed_ger' },
+                    { text: 'Sweden', callback_data: 'speed_sweden' }
+                ],
+                [
+                    { text: 'Spain', callback_data: 'speed_sp' },
+                    { text: 'Iran', callback_data: 'speed_ir' }
+                ],
+                [
+                    { text: 'Italy', callback_data: 'speed_it' },
+                    { text: 'Turkey', callback_data: 'speed_tur' }
+                ],
+                [
+                    { text: 'USA', callback_data: 'speed_usa' },
+                    { text: 'UK', callback_data: 'speed_uk' }
+                ],
+                [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
+            ]
+        }
+    },
+	
+
 };
 /*
 async function checkBalance(userId) {
@@ -228,7 +265,7 @@ bot.on('message', async (msg) => {
 
 const callbackToServer = {
     speed_ger: 'Ger',
-    speed_sweden: 'Sweden82',
+    speed_sweden: 'Sw84',
     speed_sp: 'Sp01',
     speed_ir: 'IRAN',
     speed_it: 'IT01',
