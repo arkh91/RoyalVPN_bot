@@ -104,7 +104,7 @@ async function saveKeyToDB({ userId, fullKey, guiKey, serverName, dataLimit, key
 
     try {
         await pool.execute(sql, values);
-        console.log('� Key saved to database.');
+        console.log('✅ Key saved to database.');
     } catch (err) {
         console.error('❌ Failed to save key to DB:', err.message);
     }
@@ -143,7 +143,10 @@ async function createNewKey(selectedServer, userId, bandwidthGb = 1) {
         await setKeyLimit(apiUrl, apiKey, accessKey.id, dataLimitBytes);
 
         const accessUrlWithLabel = `${accessKey.accessUrl}#${renamed}`;
-        console.log(`✅ New access key created: ${accessUrlWithLabel}`);
+        // Remove '/?outline=1' from the URL
+        const cleanedKey = accessUrlWithLabel.replace('/?outline=1', '');
+
+        console.log(`✅ New access key created: ${cleanedKey}`); 
 
         await saveKeyToDB({
             userId,
@@ -154,7 +157,7 @@ async function createNewKey(selectedServer, userId, bandwidthGb = 1) {
             keyNumber: timestamp
         });
 
-        return accessUrlWithLabel;
+        return cleanedKey;
     } catch (error) {
         handleError(error);
         throw error;
