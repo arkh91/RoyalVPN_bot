@@ -17,7 +17,7 @@ const deductBalance = require('./db/deductBalance');   // same here
 const token = '';
 //const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
-//const NOWPAYMENTS_API_KEY = '4PPCTPB-385MXPM-N5DBCGX-KV64DPY';
+//const NOWPAYMENTS_API_KEY = '';
 
 const createNowPaymentsSession = require('./createNowPaymentsSession');
 
