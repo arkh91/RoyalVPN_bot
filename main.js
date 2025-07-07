@@ -346,29 +346,7 @@ bot.on('callback_query', async (query) => {
         );
     }
 
-  /*  // BANDWIDTH PURCHASE FLOW
-    if (data.startsWith('bw_')) {
-        
 
-    const selectedServer = session.selectedServer;
-	try {
-	//	const username = msg.from.username;
-     const eligible = await checkEligible(userId, chatId, bot);
-const hasBalance = await checkBalance(userId);
-
-    if (!eligible && !hasBalance) {
-        bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
-        return; // Stop here if not eligible and no balance
-    }
-
-    if (eligible) {
-        bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
-    }
-
-    const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
-    bot.sendMessage(chatId, `✅ Your access key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
-
-*/
 if (data.startsWith('bw_')) {
     const bandwidthGb = parseInt(data.replace('bw_', ''), 10);
 
@@ -431,33 +409,6 @@ if (data.startsWith('bw_')) {
 }
 
 
-    /*/ ARENA 25GB & 50GB FLOW
-    if (data === 'arena_25gb' || data === 'arena_50gb') {
-        const bandwidthGb = data === 'arena_25gb' ? 25 : 50;
-        const selectedServer = 'IT01';
-
-        try {
-            const eligible = await Game_Arena_checkEligible(userId, chatId, bot);
-            const hasBalance = await checkBalance(userId);
-
-            if (!eligible && !hasBalance) {
-                return bot.sendMessage(chatId, `❌ You do not have enough balance. Please use /payment to top up.`);
-            }
-
-            if (eligible) {
-                await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
-            }
-
-            const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
-            await bot.sendMessage(chatId, `✅ Your ${bandwidthGb}GB Arena key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
-        } catch (err) {
-            await bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
-        }
-
-        return;
-    }*/
-
-
 if (data === 'arena_25gb' || data === 'arena_50gb') {
     const bandwidthGb = data === 'arena_25gb' ? 25 : 50;
     const selectedServer = 'IT01';
@@ -515,6 +466,7 @@ if (data === 'arena_25gb' || data === 'arena_50gb') {
             reply_markup: {
                 inline_keyboard: [
                     [{ text: 'Dogecoin (DOGE)', callback_data: 'pay_doge' }],
+		    [{ text: 'Toncoin (Ton)', callback_data: 'pay_ton' }],
                     [{ text: '⬅️ Go Back', callback_data: 'back_to_payment' }]
                 ]
             }
@@ -583,6 +535,68 @@ if (data === 'arena_25gb' || data === 'arena_50gb') {
             await bot.sendMessage(chatId, '⚠️ An error occurred while generating your Dogecoin payment link.');
         }
     }
+    if (data === 'pay_ton') {
+    	return bot.editMessageText('🔗 Choose the TON network:', {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: 'TON (The Open Network)', callback_data: 'ton_network_native' }],
+                [{ text: '⬅️ Go Back', callback_data: 'pay_nowpayment' }]
+            ]
+        }
+    	});
+    }
+
+    if (data === 'ton_network_native') {
+    	return bot.editMessageText('💰 Choose the amount to pay in USD:', {
+        	chat_id: chatId,
+        	message_id: messageId,
+        	reply_markup: {
+            	inline_keyboard: [
+                	[
+                    //{ text: '$1', callback_data: 'ton_pay_1' },
+                    	{ text: '$2', callback_data: 'ton_pay_2' },
+                    	{ text: '$5', callback_data: 'ton_pay_5' }
+                	],
+                	[
+                    	{ text: '$10', callback_data: 'ton_pay_10' },
+                    	{ text: '$20', callback_data: 'ton_pay_20' }
+                	],
+                	[
+                    	{ text: '$50', callback_data: 'ton_pay_50' },
+                    	{ text: '$100', callback_data: 'ton_pay_100' }
+                	],
+                	[{ text: '⬅️ Go Back', callback_data: 'pay_ton' }]
+            	]
+        	}
+    	});
+    }
+
+    if (data.startsWith('ton_pay_')) {
+    	const amount = data.replace('ton_pay_', '');
+    	const currency = 'TON';
+
+    	try {
+        // Edit the original message
+        	await bot.editMessageText(`🪙 Generating TON payment session for $${amount}`, {
+            	chat_id: chatId,
+            	message_id: messageId
+        	});
+
+        // Generate payment session
+        	const paymentUrl = await createNowPaymentsSession(chatId, amount, currency);
+
+        	if (paymentUrl) {
+            	await bot.sendMessage(chatId, `✅ Click the link below to pay with TON:\n\n${paymentUrl}`);
+        	} else {
+            	await bot.sendMessage(chatId, '❌ Failed to create payment session. Please try again later.');
+        	}
+    	} catch (err) {
+        	console.error('❌ Error handling TON payment:', err);
+        	await bot.sendMessage(chatId, '⚠️ An error occurred while generating your TON payment link.');
+    	}
+    }
 
 
     if (data === 'back_to_payment') {
@@ -592,7 +606,7 @@ if (data === 'arena_25gb' || data === 'arena_50gb') {
             reply_markup: {
                 inline_keyboard: [
                     [{ text: 'Direct (Credit Card)', callback_data: 'pay_direct' }],
-                    [{ text: 'NowPayment (Digital Currency)', callback_data: 'pay_nowpayment' }],
+                    [{ text: 'Digital Currency', callback_data: 'pay_nowpayment' }],
                     [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
                 ]
             }
