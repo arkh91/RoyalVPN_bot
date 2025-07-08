@@ -13,11 +13,11 @@ const getUserBalance = require('./db/getUserBalance'); // adjust path as needed
 const deductBalance = require('./db/deductBalance');   // same here
 
 
-//const token = '';
-const token = 'A';
+//const token = '8089450002:AAGBg30giuM_aGMK-g5jfYnNvY_Mv4xyThA';
+const token = '6278626740:AAExqUoi32bo4XUkrt_ehk_tpNfpWhRgqBA';
 //const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
-//const NOWPAYMENTS_API_KEY = '';
+//const NOWPAYMENTS_API_KEY = '4PPCTPB-385MXPM-N5DBCGX-KV64DPY';
 
 const createNowPaymentsSession = require('./createNowPaymentsSession');
 
@@ -1405,4 +1405,3 @@ console.log(`⚡ BW Selection: data=${data}, isInternational=${isInternational}`
         text: '✅ Option selected.'
     });
 });
-
