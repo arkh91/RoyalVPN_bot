@@ -5,6 +5,13 @@ const flags = require('./flags');
 
 process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0'; // For local/test only
 
+const customDomains = {
+    US08: 'us08dir.krp2025.online',
+    IT01: 'it.krp2025.online',
+    Sw04: 's84.krp2025.online',
+    // Add more as needed
+};
+
 function getTimestampName() {
     const now = new Date();
     const mm = String(now.getMonth() + 1).padStart(2, '0');
@@ -143,7 +150,7 @@ async function createInternationalKey(userId, selectedServer, bandwidthGb = 1, d
 
         const accessUrlWithLabel = `${accessKey.accessUrl}#${renamed}`;
         const cleanedKey = accessUrlWithLabel.replace('/?outline=1', '');
-
+	const polishedFullKey = getPolishedFullKey(cleanedKey, selectedServer);
         console.log(`🌍 New international key created: ${cleanedKey}`);
 
         await saveKeyToDB({
@@ -156,7 +163,7 @@ async function createInternationalKey(userId, selectedServer, bandwidthGb = 1, d
         });
 
         return {
-            key: cleanedKey,
+            key: polishedFullKey,
             server: selectedServer,
             expiresIn: durationDays
         };
@@ -165,6 +172,46 @@ async function createInternationalKey(userId, selectedServer, bandwidthGb = 1, d
         throw error;
     }
 }
+
+function getPolishedFullKey(cleanedKey, selectedServer) {
+    const customDomain = customDomains[selectedServer.toUpperCase()];
+    if (!customDomain) {
+        console.error(`⚠️ No custom domain found for ${selectedServer}`);
+        return cleanedKey;
+    }
+
+    console.log('📥 cleanedKey:', cleanedKey);
+    console.log('🌐 customDomain:', customDomain);
+
+    try {
+        // Match ss://ENCODED@ip:port#label
+        const regex = /^(ss:\/\/[^@]+@)([^:]+)(:\d+)(.*)$/;
+        const match = cleanedKey.match(regex);
+
+        if (!match) {
+            console.error('❌ Invalid Shadowsocks URL format:', cleanedKey);
+            return cleanedKey;
+        }
+
+        const beforeHost = match[1];   // ss://ENCODED@
+        const oldHost = match[2];      // IP or domain
+        const port = match[3];         // :8388
+        const suffix = match[4];       // #label, etc.
+
+        console.log(`🔁 Replacing host "${oldHost}" with "${customDomain}"`);
+
+        const polishedKey = `${beforeHost}${customDomain}${port}${suffix}`;
+
+        console.log('✅ polishedKey:', polishedKey);
+        return polishedKey;
+
+    } catch (err) {
+        console.error('❌ Error polishing key:', err);
+        return cleanedKey;
+    }
+}
+
+
 
 module.exports = {
     createInternationalKey
