@@ -8,7 +8,7 @@ process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0'; // For local/test only
 const customDomains = {
     US08: 'us08dir.krp2025.online',
     IT01: 'it.krp2025.online',
-    Sw04: 's84.krp2025.online',
+    Sw84: 's84.krp2025.online',
     // Add more as needed
 };
 
@@ -174,7 +174,9 @@ async function createInternationalKey(userId, selectedServer, bandwidthGb = 1, d
 }
 
 function getPolishedFullKey(cleanedKey, selectedServer) {
-    const customDomain = customDomains[selectedServer.toUpperCase()];
+    //const customDomain = customDomains[selectedServer.toUpperCase()];
+    const customDomain = customDomains[Object.keys(customDomains).find(k => k.toLowerCase() === selectedServer.toLowerCase())];
+
     if (!customDomain) {
         console.error(`⚠️ No custom domain found for ${selectedServer}`);
         return cleanedKey;
