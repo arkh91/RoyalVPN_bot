@@ -4,6 +4,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const insertUser = require('./db/insertUser');
 const insertVisit = require('./db/insertVisit');
 const { createNewKey } = require('./db/KeyCreation');
+const { createInternationalKey } = require('./db/KeyCreationInternational');
 const checkBalance = require('./checkBalance');
 const { getKeyStatusResponseMessage } = require('./KeyStatus');
 const checkEligible = require ('./checkEligibility');
@@ -133,22 +134,35 @@ const subMenus = {
         reply_markup: {
             inline_keyboard: [
                 [
-                    { text: 'Germany (soon)', callback_data: 'speed_ger' },
-                    { text: 'Sweden', callback_data: 'speed_sweden' }
+                    { text: 'Germany (soon)', callback_data: 'int_speed_ger' },
+                    { text: 'Sweden int', callback_data: 'int_speed_sweden' }
                 ],
                 [
-                    { text: 'Spain', callback_data: 'speed_sp' },
-                    { text: 'Iran', callback_data: 'speed_ir' }
+                    { text: 'Spain', callback_data: 'int_speed_sp' },
+                    { text: 'Iran', callback_data: 'int_speed_ir' }
                 ],
                 [
-                    { text: 'Italy', callback_data: 'speed_it' },
-                    { text: 'Turkey', callback_data: 'speed_tur' }
+                    { text: 'Italy', callback_data: 'int_speed_it' },
+                    { text: 'Turkey', callback_data: 'int_speed_tur' }
                 ],
                 [
-                    { text: 'USA', callback_data: 'speed_usa' },
-                    { text: 'UK', callback_data: 'speed_uk' }
+                    { text: 'USA', callback_data: 'int_speed_usa' },
+                    { text: 'UK', callback_data: 'int_speed_uk' }
                 ],
                 [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
+            ]
+        }
+    },
+    bandwidth_menu_int: {
+        text: 'Select the 30-day Outline bandwidth limit:',
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '50 GB / 1.29 USD', callback_data: 'int_bw_50' }],
+                [{ text: '100 GB / 2.33 USD', callback_data: 'int_bw_100' }],
+                [{ text: '300 GB / 5.60 USD', callback_data: 'int_bw_300' }],
+                [{ text: '500 GB / 9.30 USD', callback_data: 'int_bw_500' }],
+                [{ text: '1000 GB / 16.99 USD', callback_data: 'int_bw_1000' }],
+		[{ text: '⬅️ Go Back', callback_data: 'sub_INT_speed' }]
             ]
         }
     },
@@ -273,36 +287,68 @@ const callbackToServer = {
     speed_usa: 'US08',
     speed_uk: 'UK37'
 };
-/*
-const bandwidthPrices = {
-    50: 1.29,
-    100: 2.33,
-    300: 5.60,
-    500: 9.30,
-    1000: 16.99
+
+// 🌐 Mapping for International Accounts
+const callbackToInternationalServer = {
+    int_speed_ger: 'Ger',
+    int_speed_sweden: 'Sw84',
+    int_speed_sp: 'Sp01',
+    int_speed_ir: 'IRAN',
+    int_speed_it: 'IT01',
+    int_speed_tur: 'Tur14',
+    int_speed_usa: 'US08',
+    int_speed_uk: 'UK37'
 };
-*/
+
+
     	
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
     const data = query.data;
     const userId = query.from.id;
+    //console.log(`[TRACE] User=${userId} | Data=${data}`);
 
-    // SESSION SETUP FOR BANDWIDTH MENU
-    const bandwidthCountries = ['speed_sweden', 'speed_sp', 'speed_it', 'speed_tur', 'speed_usa', 'speed_uk'];
-    if (bandwidthCountries.includes(data)) {
-        const selectedServer = callbackToServer[data];
-        bot.session = bot.session || {};
-        bot.session[userId] = { selectedServer };
 
-        const bandwidthMenu = subMenus.bandwidth_menu;
-        return bot.editMessageText(bandwidthMenu.text, {
-            chat_id: chatId,
-            message_id: messageId,
-            reply_markup: bandwidthMenu.reply_markup
-        });
-    }
+const regularSpeedCallbacks = Object.keys(callbackToServer); // i.e., speed_usa, speed_ir, etc.
+
+if (regularSpeedCallbacks.includes(data)) {
+    const selectedServer = callbackToServer[data];
+    bot.session = bot.session || {};
+    bot.session[userId] = {
+        selectedServer,
+        isInternational: false   // ✅ Optional, but helpful for clarity
+    };
+
+    const bandwidthMenu = subMenus.bandwidth_menu;
+    return bot.editMessageText(bandwidthMenu.text, {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: bandwidthMenu.reply_markup
+    });
+}
+
+
+
+    const internationalSpeedCallbacks = Object.keys(callbackToInternationalServer);
+
+    if (internationalSpeedCallbacks.includes(data)) {
+    const selectedServer = callbackToInternationalServer[data];
+    bot.session = bot.session || {};
+    bot.session[userId] = {
+        selectedServer,
+        isInternational: true    // ✅ Add this flag
+    };
+
+    const bandwidthMenu = subMenus.bandwidth_menu_int;  // ✅ Also make sure this is the INT menu
+    return bot.editMessageText(bandwidthMenu.text, {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: bandwidthMenu.reply_markup
+    });
+}
+
+
 
     // SUBMENUS HANDLING
     if (subMenus[data]) {
@@ -345,118 +391,134 @@ bot.on('callback_query', async (query) => {
             }
         );
     }
+   
+ 
+    if (data.startsWith('bw_') || data.startsWith('int_bw_')) {
+    	const isInternational = data.startsWith('int_bw_');
+	console.log(`⚡ BW Selection: data=${data}, isInternational=${isInternational}`);
+	const bandwidthGb = parseInt(data.replace(isInternational ? 'int_bw_' : 'bw_', ''), 10);
 
+    	const bandwidthPrices = {
+        	50: 1.29,
+        	100: 2.33,
+        	300: 5.60,
+        	500: 9.30,
+        	1000: 16.99
+    	};
 
-if (data.startsWith('bw_')) {
-    const bandwidthGb = parseInt(data.replace('bw_', ''), 10);
+    	const requiredAmount = bandwidthPrices[bandwidthGb];
+    	const session = bot.session?.[userId];
 
-    const bandwidthPrices = {
-        50: 1.29,
-        100: 2.33,
-        300: 5.60,
-        500: 9.30,
-        1000: 16.99
-    };
+    	if (!session || !session.selectedServer) {
+        	await bot.sendMessage(chatId, '❌ Error: No server selected. Please start again.');
+        	return;
+    	}
 
-    const requiredAmount = bandwidthPrices[bandwidthGb];
-    const session = bot.session?.[userId];
+    	const selectedServer = session.selectedServer;
 
-    if (!session || !session.selectedServer) {
-        await bot.sendMessage(chatId, '❌ Error: No server selected. Please start again.');
-        return;
+    	try {
+        	const eligible = await checkEligible(userId, chatId, bot);
+        	const balanceValue = await getUserBalance(userId);
+
+        	console.log(`User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Required: $${requiredAmount}`);
+
+        // Not enough balance
+        	if (!eligible && balanceValue < requiredAmount) {
+            		await bot.sendMessage(
+                		chatId,
+                		`❌ You need at least $${requiredAmount.toFixed(2)} to buy ${bandwidthGb} GB.\nYour current balance: $${balanceValue.toFixed(2)}.\n\nUse /payment to top up.`
+            		);
+            		return;
+        	}
+
+        // VIP info
+        	if (eligible) {
+            		await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
+        	}
+
+        // ✅ Key generation logic
+        	if (isInternational) {
+	    		//console.log('🌐 INTERNATIONAL: selectedServer =', selectedServer);
+            		const result = await createInternationalKey(userId, selectedServer, bandwidthGb, 30);
+            		await bot.sendMessage(chatId,
+                	`✅ Your *International* access key:\n\`${result.key}\`\n🌍 Server: ${result.server}\n⏳ Expires in: ${result.expiresIn} days`,
+                		{ parse_mode: 'Markdown' }
+            		);
+	    //await bot.sendMessage(chatId, `✅ Your access key:\n\`${result.Key}\``, { parse_mode: 'Markdown' });
+        	} else {
+            		const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
+            		await bot.sendMessage(chatId,
+                		`✅ Your access key:\n\`${newKey}\``,
+                		{ parse_mode: 'Markdown' }
+            		);
+        	}
+
+        // Deduct for non-VIP
+        	if (!eligible) {
+            		await deductBalance(userId, requiredAmount);
+            		await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
+        	}
+
+    	} catch (err) {
+        	console.error('❌ Error in bandwidth purchase:', err);
+        	await bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
+    	}
+
+    	// 🔒 Cleanup session
+    	delete bot.session[userId];
+    	return;	
     }
 
-    const selectedServer = session.selectedServer;
-
-    try {
-        const eligible = await checkEligible(userId, chatId, bot);
-        const balanceValue = await getUserBalance(userId); // Should return number (e.g. 3.50)
-
-        console.log(`User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Required: $${requiredAmount}`);
-
-        // Block if not VIP and not enough balance
-        if (!eligible && balanceValue < requiredAmount) {
-            await bot.sendMessage(
-                chatId,
-                `❌ You need at least $${requiredAmount.toFixed(2)} to buy ${bandwidthGb} GB.\nYour current balance: $${balanceValue.toFixed(2)}.\n\nUse /payment to top up.`
-            );
-            return;
-        }
-
-        // Inform VIP users
-        if (eligible) {
-            await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
-        }
-
-        // Create key
-        const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
-        await bot.sendMessage(chatId, `✅ Your access key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
-
-        // Deduct balance only for non-VIP
-        if (!eligible) {
-            await deductBalance(userId, requiredAmount);
-            await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
-        }
-
-    } catch (err) {
-        console.error('❌ Error in bandwidth purchase:', err);
-        await bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
-    }
-
-    // Cleanup
-    delete bot.session[userId];
-    return;
-}
 
 
-if (data === 'arena_25gb' || data === 'arena_50gb') {
-    const bandwidthGb = data === 'arena_25gb' ? 25 : 50;
-    const selectedServer = 'IT01';
+    if (data === 'arena_25gb' || data === 'arena_50gb') {
+    	const bandwidthGb = data === 'arena_25gb' ? 25 : 50;
+    	const selectedServer = 'IT01';
 
-    // Define Arena pricing
-    const arenaPrices = {
-        25: 0.99,  // Adjust these prices as needed
-        50: 1.89
-    };
+    	// Define Arena pricing
+    	const arenaPrices = {
+        	25: 0.99,  // Adjust these prices as needed
+        	50: 1.89
+    	};
 
-    const requiredAmount = arenaPrices[bandwidthGb];
+    	const requiredAmount = arenaPrices[bandwidthGb];
 
-    try {
-        const eligible = await Game_Arena_checkEligible(userId, chatId, bot);
-        const balanceValue = await getUserBalance(userId); // Should return number like 3.75
+    	try {
+        	const eligible = await Game_Arena_checkEligible(userId, chatId, bot);
+        	const balanceValue = await getUserBalance(userId); // Should return number like 3.75
 
-        console.log(`Arena | User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Needs: $${requiredAmount}`);
+        	console.log(`Arena | User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Needs: $${requiredAmount}`);
 
-        // Block if not eligible and not enough balance
-        if (!eligible && balanceValue < requiredAmount) {
-            await bot.sendMessage(
-                chatId,
+        	// Block if not eligible and not enough balance
+        	if (!eligible && balanceValue < requiredAmount) {
+            		await bot.sendMessage(
+                	chatId,
                 `❌ You need at least $${requiredAmount.toFixed(2)} to get ${bandwidthGb}GB Arena access.\nYour current balance: $${balanceValue.toFixed(2)}.\nUse /payment to top up.`
-            );
-            return;
-        }
+            	);
+            		return;
+        	}
 
-        if (eligible) {
-            await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive Arena access.`);
-        }
+        	if (eligible) {
+            		await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive Arena access.`);
+        	}
 
         // Create the key
-        const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
-        await bot.sendMessage(chatId, `✅ Your ${bandwidthGb}GB Arena key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
+        	const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
+        	await bot.sendMessage(chatId, `✅ Your ${bandwidthGb}GB Arena key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
 
-        // Deduct balance only for non-VIP
-        if (!eligible) {
-            await deductBalance(userId, requiredAmount);
-            await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
-        }
+        	// Deduct balance only for non-VIP
+        	if (!eligible) {
+            		await deductBalance(userId, requiredAmount);
+            		await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
+        	}
 
-    } catch (err) {
-        console.error('❌ Arena purchase error:', err);
-        await bot.sendMessage(chatId, `❌ Failed to create Arena key: ${err.message}`);
-    }
+    	} catch (err) {
+        	console.error('❌ Arena purchase error:', err);
+        	await bot.sendMessage(chatId, `❌ Failed to create Arena key: ${err.message}`);
+    	}
 
-    return;
-}
+    		return;
+	}
 
     // NOWPAYMENT → DOGECOIN SUBMENUS
     if (data === 'pay_nowpayment') {
@@ -618,8 +680,3 @@ if (data === 'arena_25gb' || data === 'arena_50gb') {
         text: '✅ Option selected.'
     });
 });
-
-// Start Express server
-//app.listen(3000, () => {
-    //console.log('� Express server running on port 3000');
-//});
