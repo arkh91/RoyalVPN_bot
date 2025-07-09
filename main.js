@@ -14,8 +14,8 @@ const getUserBalance = require('./db/getUserBalance'); // adjust path as needed
 const deductBalance = require('./db/deductBalance');   // same here
 
 
-//const token = '';
 const token = '';
+//const token = '';
 //const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
 //const NOWPAYMENTS_API_KEY = '';
@@ -88,20 +88,21 @@ const subMenus = {
         reply_markup: {
             inline_keyboard: [
                 [
-                    { text: 'Germany (soon)', callback_data: 'speed_ger' },
-                    { text: 'Sweden', callback_data: 'speed_sweden' }
+                    { text: 'Germany 🇩🇪', callback_data: 'speed_ger' },
+                    { text: 'Sweden 🇸🇪', callback_data: 'speed_sweden' }
                 ],
                 [
-                    { text: 'Spain', callback_data: 'speed_sp' },
-                    { text: 'Iran', callback_data: 'speed_ir' }
+                    { text: 'Spain 🇪🇸', callback_data: 'speed_sp' },
+                    { text: 'Iran 🇮🇷', callback_data: 'speed_ir' }
                 ],
                 [
-                    { text: 'Italy', callback_data: 'speed_it' },
-                    { text: 'Turkey', callback_data: 'speed_tur' }
-                ],
+                    { text: 'Italy 🇮🇹', callback_data: 'speed_it' },
+                    //{ text: 'Turkey', callback_data: 'speed_tur' }
+                    { text: 'Armenia 🇦🇲', callback_data: 'speed_arm' }
+		],
                 [
-                    { text: 'USA', callback_data: 'speed_usa' },
-                    { text: 'UK', callback_data: 'speed_uk' }
+                    { text: 'USA 🇺🇸', callback_data: 'speed_usa' },
+                    { text: 'UK 🇬🇧', callback_data: 'speed_uk' }
                 ],
                 [{ text: '⬅️ Go Back', callback_data: 'menu_1' }]
             ]
@@ -130,24 +131,24 @@ const subMenus = {
         }
     },*/
     sub_INT_speed: {
-        text: '⚡ Choose a high-speed location for fast and secure internet:',
+        text: '⚡ Choose a high-speed location for fast and secure internet: 🌐',
         reply_markup: {
             inline_keyboard: [
                 [
-                    { text: 'Germany (soon)', callback_data: 'int_speed_ger' },
-                    { text: 'Sweden int', callback_data: 'int_speed_sweden' }
+                    { text: 'Germany 🇩🇪', callback_data: 'int_speed_ger' },
+                    { text: 'Sweden 🇸🇪', callback_data: 'int_speed_sweden' }
                 ],
                 [
-                    { text: 'Spain', callback_data: 'int_speed_sp' },
-                    { text: 'Iran', callback_data: 'int_speed_ir' }
+                    { text: 'Spain 🇪🇸', callback_data: 'int_speed_sp' },
+                    { text: 'Iran 🇮🇷', callback_data: 'int_speed_ir' }
                 ],
                 [
-                    { text: 'Italy', callback_data: 'int_speed_it' },
-                    { text: 'Turkey', callback_data: 'int_speed_tur' }
+                    { text: 'Italy 🇮🇹', callback_data: 'int_speed_it' },
+                    { text: 'Armenia 🇦🇲', callback_data: 'int_speed_arm' }
                 ],
                 [
-                    { text: 'USA', callback_data: 'int_speed_usa' },
-                    { text: 'UK', callback_data: 'int_speed_uk' }
+                    { text: 'USA 🇺🇸', callback_data: 'int_speed_usa' },
+                    { text: 'UK 🇬🇧', callback_data: 'int_speed_uk' }
                 ],
                 [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
             ]
@@ -283,7 +284,8 @@ const callbackToServer = {
     speed_sp: 'Sp01',
     speed_ir: 'IRAN',
     speed_it: 'IT01',
-    speed_tur: 'Tur14',
+    //speed_tur: 'Tur14',
+    speed_arm: 'Arm01',
     speed_usa: 'US08',
     speed_uk: 'UK37'
 };
@@ -295,7 +297,8 @@ const callbackToInternationalServer = {
     int_speed_sp: 'Sp01',
     int_speed_ir: 'IRAN',
     int_speed_it: 'IT01',
-    int_speed_tur: 'Tur14',
+    //int_speed_tur: 'Tur14',
+    int_speed_arm: 'Arm01',	
     int_speed_usa: 'US08',
     int_speed_uk: 'UK37'
 };
