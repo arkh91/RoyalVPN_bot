@@ -150,7 +150,7 @@ async function createNewKey(selectedServer, userId, bandwidthGb = 1) {
 
         await saveKeyToDB({
             userId,
-            fullKey: accessUrlWithLabel,
+	        fullKey: cleanedKey,
             guiKey: `#${renamed}`,
             serverName: selectedServer,
             dataLimit: bandwidthGb,
