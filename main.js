@@ -9,25 +9,50 @@ const checkBalance = require('./checkBalance');
 const { getKeyStatusResponseMessage } = require('./KeyStatus');
 const checkEligible = require ('./checkEligibility');
 const Game_Arena_checkEligible = require ('./Game_Arena_checkEligibility');
-//const webhookRoutes = require('./webhook');
 const getUserBalance = require('./db/getUserBalance'); // adjust path as needed
 const deductBalance = require('./db/deductBalance');   // same here
+const db = require('./db');
+const getNowPaymentsStatus = require('./getNowPaymentsStatus');
+const updatePendingPayments = require('./updatePendingPayments');
+const fs = require('fs');
+
+let callbackToServer = {};
+let callbackToInternationalServer = {};
 
 
-const token = '';
-//const token = '';
-//const { TELEGRAM_BOT_TOKEN } = require('./token');
+
+const token = ''; //RoyalVPN
+//const token = ''; //Test
+
 const { NOWPAYMENTS_API_KEY } = require('./token');
 //const NOWPAYMENTS_API_KEY = '';
 
 const createNowPaymentsSession = require('./createNowPaymentsSession');
 
-//const app = express();
-//app.use(express.json());
-//app.use('/', webhookRoutes);
+// Function to load JSON config
+function loadConfig() {
+    const raw = fs.readFileSync('./callbacks.json');
+    const config = JSON.parse(raw);
 
+    callbackToServer = config.callbackToServer;
+    callbackToInternationalServer = config.callbackToInternationalServer;
 
-const { paymentsMenu, paymentsSubMenus } = require('./payments');
+    console.log('✅ Callbacks loaded');
+}
+
+// Initial load
+loadConfig();
+
+// Watch file for changes
+fs.watchFile('./callbacks.json', { interval: 2000 }, () => {
+    try {
+        console.log('⚡ callbacks.json updated, reloading...');
+        loadConfig();
+    } catch (err) {
+        console.error('❌ Failed to reload callbacks.json:', err);
+    }
+});
+
 const waitingForKey = new Set();
 
 const bot = new TelegramBot(token, {
@@ -38,15 +63,12 @@ const bot = new TelegramBot(token, {
     }
 });
 
-// Export for use in webhook.js
-//module.exports = bot;
-
 
 const mainMenu = {
     reply_markup: {
         inline_keyboard: [
             [{ text: 'IRAN🇮🇷', callback_data: 'menu_1' }],
-            [{ text: 'Russia🇷🇺', callback_data: 'menu_1' }],
+            [{ text: 'Russia🇷🇺', callback_data: 'menu_Russia' }],
             [{ text: 'International 🌐', callback_data: 'sub_INT_speed' }]
         ]
     }
@@ -93,16 +115,18 @@ const subMenus = {
                 ],
                 [
                     { text: 'Spain 🇪🇸', callback_data: 'speed_sp' },
-                    { text: 'Iran 🇮🇷', callback_data: 'speed_ir' }
+                    //{ text: 'Iran 🇮🇷', callback_data: 'speed_ir' }
+		    { text: 'Italy 🇮🇹 ', callback_data: 'speed_it' }
                 ],
                 [
-                    { text: 'Italy 🇮🇹', callback_data: 'speed_it' },
+                    //{ text: 'Italy 🇮🇹', callback_data: 'speed_it' },
                     //{ text: 'Turkey', callback_data: 'speed_tur' }
-                    { text: 'Armenia 🇦🇲', callback_data: 'speed_arm' }
+                    { text: 'Armenia 🇦🇲', callback_data: 'speed_arm' },
+		    { text: 'UAE 🇦🇪' , callback_data: 'speed_uae' }
 		],
                 [
-                    { text: 'USA 🇺🇸', callback_data: 'speed_usa' },
-                    { text: 'UK 🇬🇧', callback_data: 'speed_uk' }
+		    { text: 'UK 🇬🇧 ', callback_data: 'speed_uk' },
+                    { text: 'USA 🇺🇸', callback_data: 'speed_usa' }
                 ],
                 [{ text: '⬅️ Go Back', callback_data: 'menu_1' }]
             ]
@@ -113,6 +137,7 @@ const subMenus = {
         reply_markup: {
             inline_keyboard: [
                 [{ text: '50 GB / 1.29 USD', callback_data: 'bw_50' }],
+		[{ text: '70 GB / 1.95 USD', callback_data: 'bw_70' }],
                 [{ text: '100 GB / 2.33 USD', callback_data: 'bw_100' }],
                 [{ text: '300 GB / 5.60 USD', callback_data: 'bw_300' }],
                 [{ text: '500 GB / 9.30 USD', callback_data: 'bw_500' }],
@@ -121,15 +146,7 @@ const subMenus = {
             ]
         }
     },
-    /*menu_INT: {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: 'Game', callback_data: 'sub_1_game' }],
-                [{ text: 'High Speed', callback_data: 'sub_1_speed' }],
-                [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
-            ]
-        }
-    },*/
+    
     sub_INT_speed: {
         text: '⚡ Choose a high-speed location for fast and secure internet: 🌐',
         reply_markup: {
@@ -170,11 +187,7 @@ const subMenus = {
 	
 
 };
-/*
-async function checkBalance(userId) {
-    return true; // Replace with actual DB logic later
-}
-*/
+
 (async () => {
     const result = await checkBalance(123456);
     console.log('Balance check result:', result);
@@ -226,7 +239,7 @@ bot.onText(/\/payment/, (msg) => {
 });
 
 
-
+/*
 bot.onText(/\/balance/, async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -251,9 +264,94 @@ bot.onText(/\/balance/, async (msg) => {
     }
   } catch (err) {
     await bot.sendMessage(chatId, '❌ An error occurred while checking your balance.');
-    console.error('Balance check error:', err);
+    nsole.error('Balance check error:', err);
   }
 });
+
+
+bot.onText(/\/balance/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  try {
+    // 1. First check for completed payments
+    const completedPayments = await getNowPaymentsStatus(userId);
+    
+    // 2. If any payments were completed, notify user
+    if (completedPayments.length > 0) {
+      for (const payment of completedPayments) {
+        await bot.sendMessage(
+          chatId,
+          `✅ Payment completed!\n` +
+          `Amount: ${payment.apiData.actually_paid} ${payment.apiData.pay_currency}\n` +
+          `USD Value: $${payment.apiData.price_amount}`
+        );
+      }
+    }
+
+    // 3. Show current balance
+    const balance = await checkBalance(userId);
+    await bot.sendMessage(
+      chatId,
+      `💰 Your balance: $${balance}\n` +
+      `📊 Recent payments: ${completedPayments.length} completed`
+    );
+
+  } catch (error) {
+    console.error('Balance check error:', error);
+    await bot.sendMessage(chatId, '⚠️ Error checking balance. Please try again.');
+  }
+});
+*/
+bot.onText(/\/balance/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+
+    try {
+        // 1. Find all orders for this user
+        const [orders] = await db.execute(
+            "SELECT OrderID FROM payments WHERE UserID = ? AND Status != 'finished'",
+            [userId]
+        );
+
+        // 2. Check each order's status
+        for (const { OrderID } of orders) {
+            const status = await getNowPaymentsStatus(OrderID);
+            
+            if (status.status === 'finished') {
+                await db.execute(
+                    "UPDATE payments SET Status = 'finished' WHERE OrderID = ?",
+                    [OrderID]
+                );
+                
+                // Convert to number before adding to balance
+                const amount = parseFloat(status.usdValue) || 0;
+                await db.execute(
+                    "UPDATE accounts SET CurrentBalance = COALESCE(CurrentBalance, 0) + ? WHERE UserID = ?",
+                    [amount, userId]
+                );
+            }
+        }
+
+        // 3. Get current balance safely
+        const [account] = await db.execute(
+            "SELECT COALESCE(CurrentBalance, 0) AS balance FROM accounts WHERE UserID = ?",
+            [userId]
+        );
+        
+        const balance = Number(account[0]?.balance) || 0;
+        await bot.sendMessage(
+            chatId,
+            `💰 Your balance: $${balance.toFixed(2)}`
+        );
+
+    } catch (error) {
+        console.error('Balance check error:', error);
+        await bot.sendMessage(chatId, 'Error checking balance. Please try again.');
+    }
+});
+
+
 
 
 bot.onText(/\/KeyStatus/, (msg) => {
@@ -278,32 +376,6 @@ bot.on('message', async (msg) => {
     }
 });
 
-const callbackToServer = {
-    speed_ger: 'Ger',
-    speed_sweden: 'Sw84',
-    speed_sp: 'Sp01',
-    speed_ir: 'IRAN',
-    speed_it: 'IT01',
-    //speed_tur: 'Tur14',
-    speed_arm: 'Arm01',
-    speed_usa: 'US08',
-    speed_uk: 'UK37'
-};
-
-// 🌐 Mapping for International Accounts
-const callbackToInternationalServer = {
-    int_speed_ger: 'Ger',
-    int_speed_sweden: 'Sw84',
-    int_speed_sp: 'Sp01',
-    int_speed_ir: 'IRAN',
-    int_speed_it: 'IT01',
-    //int_speed_tur: 'Tur14',
-    int_speed_arm: 'Arm01',	
-    int_speed_usa: 'US08',
-    int_speed_uk: 'UK37'
-};
-
-
     	
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
@@ -313,44 +385,51 @@ bot.on('callback_query', async (query) => {
     //console.log(`[TRACE] User=${userId} | Data=${data}`);
 
 
-const regularSpeedCallbacks = Object.keys(callbackToServer); // i.e., speed_usa, speed_ir, etc.
+    const regularSpeedCallbacks = Object.keys(callbackToServer); // i.e., speed_usa, speed_ir, etc.
 
-if (regularSpeedCallbacks.includes(data)) {
-    const selectedServer = callbackToServer[data];
-    bot.session = bot.session || {};
-    bot.session[userId] = {
-        selectedServer,
-        isInternational: false   // ✅ Optional, but helpful for clarity
-    };
+    if (regularSpeedCallbacks.includes(data)) {
+    	const selectedServer = callbackToServer[data];
+    	bot.session = bot.session || {};
+    	bot.session[userId] = {
+        	selectedServer,
+        	isInternational: false   // ✅ Optional, but helpful for clarity
+    	};
 
-    const bandwidthMenu = subMenus.bandwidth_menu;
-    return bot.editMessageText(bandwidthMenu.text, {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: bandwidthMenu.reply_markup
-    });
-}
+    	const bandwidthMenu = subMenus.bandwidth_menu;
+    	return bot.editMessageText(bandwidthMenu.text, {
+        	chat_id: chatId,
+        	message_id: messageId,
+        	reply_markup: bandwidthMenu.reply_markup
+    	});
+     }
 
 
 
     const internationalSpeedCallbacks = Object.keys(callbackToInternationalServer);
 
     if (internationalSpeedCallbacks.includes(data)) {
-    const selectedServer = callbackToInternationalServer[data];
-    bot.session = bot.session || {};
-    bot.session[userId] = {
-        selectedServer,
-        isInternational: true    // ✅ Add this flag
-    };
+    	const selectedServer = callbackToInternationalServer[data];
+    	bot.session = bot.session || {};
+    	bot.session[userId] = {
+        	selectedServer,
+        	isInternational: true    // ✅ Add this flag
+    	};
 
-    const bandwidthMenu = subMenus.bandwidth_menu_int;  // ✅ Also make sure this is the INT menu
-    return bot.editMessageText(bandwidthMenu.text, {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: bandwidthMenu.reply_markup
-    });
-}
+    	const bandwidthMenu = subMenus.bandwidth_menu_int;  // ✅ Also make sure this is the INT menu
+    	return bot.editMessageText(bandwidthMenu.text, {
+        	chat_id: chatId,
+        	message_id: messageId,
+        	reply_markup: bandwidthMenu.reply_markup
+    	});
+    }
 
+    if (data === 'menu_Russia') {
+        return bot.sendMessage(chatId, '⚠️ The Russia section is under development. Please check back later.');
+    }
+
+    if (data === 'speed_ger') {
+    	return bot.sendMessage(chatId, '⚠️ Germany server is under development. Please check back later.');
+    }
 
 
     // SUBMENUS HANDLING
@@ -373,15 +452,6 @@ if (regularSpeedCallbacks.includes(data)) {
         });
     }
 
-    // SPECIFIC PAYMENT SUBMENUS
-    if (paymentsSubMenus[data]) {
-        const submenu = paymentsSubMenus[data];
-        return bot.editMessageText(submenu.text, {
-            chat_id: chatId,
-            message_id: messageId,
-            reply_markup: submenu.reply_markup
-        });
-    }
 
     // BACK TO MAIN MENU
     if (data === 'back_to_main') {
@@ -403,6 +473,7 @@ if (regularSpeedCallbacks.includes(data)) {
 
     	const bandwidthPrices = {
         	50: 1.29,
+		70: 1.95,
         	100: 2.33,
         	300: 5.60,
         	500: 9.30,
@@ -559,7 +630,7 @@ if (regularSpeedCallbacks.includes(data)) {
                 inline_keyboard: [
                     [
                         //{ text: '$1', callback_data: 'doge_pay_1' },
-                        { text: '$2', callback_data: 'doge_pay_2' },
+                        { text: '$3', callback_data: 'doge_pay_3' },
                         { text: '$5', callback_data: 'doge_pay_5' }
                     ],
                     [
@@ -577,29 +648,66 @@ if (regularSpeedCallbacks.includes(data)) {
     }
 
     if (data.startsWith('doge_pay_')) {
-        const amount = data.replace('doge_pay_', '');
-        const currency = 'DOGE';
+    	const amount = data.replace('doge_pay_', '');
+    	const currency = 'DOGE';
+    	console.log('🟡 Received DOGE payment request for amount:', amount);
 
-        try {
-            // Edit the original message
-            await bot.editMessageText(`🪙 Generating Dogecoin payment session for $${amount}`, {
-                chat_id: chatId,
-                message_id: messageId
-            });
+    	try {
+        	await bot.editMessageText(`🪙 Generating Dogecoin payment session for $${amount}`, {
+            	chat_id: chatId,
+            	message_id: messageId
+        	});
+        	console.log('🟢 Edited message successfully');
 
-            // Generate payment session
-            const paymentUrl = await createNowPaymentsSession(chatId, amount, currency);
+        	const result = await createNowPaymentsSession(chatId, amount, currency);
+        	console.log('🔵 Got NowPayments response:', result);
 
-            if (paymentUrl) {
-                await bot.sendMessage(chatId, `✅ Click the link below to pay with Dogecoin:\n\n${paymentUrl}`);
-            } else {
-                await bot.sendMessage(chatId, '❌ Failed to create payment session. Please try again later.');
-            }
-        } catch (err) {
-            console.error('❌ Error handling Dogecoin payment:', err);
-            await bot.sendMessage(chatId, '⚠️ An error occurred while generating your Dogecoin payment link.');
-        }
+        	if (result && result.payment_url && result.order_id) {
+            		const paymentUrl = result.payment_url;
+            		const orderId = result.order_id;
+			const paymentId = result.payment_id;
+            		console.log('🟣 Using NowPayments OrderID:', orderId);
+
+            		const sql = `
+    				INSERT INTO payments (
+        			UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount,
+        			Currency, AmountPaidInUSD, CurrentRateToUSD,
+        			Status, Comments, OrderID, PaymentID
+    				) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+            		const values = [
+                	chatId,                 // UserID
+                	'crypto',               // PaymentMethod
+                	null,                   // DigitalCurrencyAmount
+                	currency,               // Currency: DOGE
+                	parseFloat(amount),     // AmountPaidInUSD
+                	null,                   // CurrentRateToUSD
+                	'waiting',              // Status
+                	'DOGE pending payment', // Comments
+                	orderId,                 // OrderID
+			paymentId              // ✅ REQUIRED for NowPayments status checks
+            		];
+
+            		try {
+                		await db.query(sql, values);
+                		console.log('✅ Payment record inserted using NowPayments OrderID');
+            		} catch (dbErr) {
+                		console.error('❌ Error inserting payment into DB:', dbErr);
+            		}
+
+            	await bot.sendMessage(chatId, `✅ Click the link below to pay with Dogecoin:\n\n${paymentUrl}`);
+        	} else {
+            		await bot.sendMessage(chatId, '❌ Failed to create payment session. Please try again later.');
+        	}
+    	} catch (err) {
+        	console.error('❌ Error handling Dogecoin payment:', err);
+        	await bot.sendMessage(chatId, '⚠️ An error occurred while generating your Dogecoin payment link.');
+    	}
     }
+
+
+
+
     if (data === 'pay_ton') {
     	return bot.editMessageText('🔗 Choose the TON network:', {
         chat_id: chatId,
@@ -638,30 +746,69 @@ if (regularSpeedCallbacks.includes(data)) {
     	});
     }
 
-    if (data.startsWith('ton_pay_')) {
-    	const amount = data.replace('ton_pay_', '');
-    	const currency = 'TON';
+if (data.startsWith('ton_pay_')) {
+    const amount = data.replace('ton_pay_', '');
+    const currency = 'TON';
+    console.log('🟡 Receieved TON payment request for amount:', amount);
 
-    	try {
-        // Edit the original message
-        	await bot.editMessageText(`🪙 Generating TON payment session for $${amount}`, {
-            	chat_id: chatId,
-            	message_id: messageId
-        	});
+    try {
+        await bot.editMessageText(`🪙 Generating TON payment session for $${amount}`, {
+            chat_id: chatId,
+            message_id: messageId
+        });
+        console.log('🟢 Edited message successfully');
 
-        // Generate payment session
-        	const paymentUrl = await createNowPaymentsSession(chatId, amount, currency);
+        // Create payment session
+        const result = await createNowPaymentsSession(chatId, amount, currency);
+        console.log('🔵 Got NowPayments response:', result);
 
-        	if (paymentUrl) {
-            	await bot.sendMessage(chatId, `✅ Click the link below to pay with TON:\n\n${paymentUrl}`);
-        	} else {
-            	await bot.sendMessage(chatId, '❌ Failed to create payment session. Please try again later.');
-        	}
-    	} catch (err) {
-        	console.error('❌ Error handling TON payment:', err);
-        	await bot.sendMessage(chatId, '⚠️ An error occurred while generating your TON payment link.');
-    	}
+        // Ensure result contains required fields
+        if (result && result.payment_url && result.orderId) {
+    		const paymentUrl = result.payment_url;
+    		const orderId = result.orderId;
+    		const paymentId = result.paymentId;
+    		const invoiceId = result.invoiceid;
+    		console.log('� Using NowPayments OrderID:', orderId);
+
+    		const sql = `
+        		INSERT INTO payments (
+            		UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount,
+            		Currency, AmountPaidInUSD, CurrentRateToUSD,
+            		Status, Comments, OrderID, PaymentID, invoiceID
+        		) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+    		const values = [
+        		chatId,                // UserID
+        		'crypto',              // PaymentMethod
+        		null,                  // DigitalCurrencyAmount (to be updated later)
+        		currency,              // Currency: TON
+        		parseFloat(amount),    // AmountPaidInUSD
+        		null,                  // CurrentRateToUSD (to be updated later)
+        		'waiting',             // Status
+        		'TON pending payment', // Comments
+        		orderId,               // OrderID from NowPayments
+        		paymentId,             // PaymentID
+        		invoiceId              // invoiceID from NowPayments
+    		];
+	
+
+            try {
+                await db.query(sql, values);
+                console.log('✅ Payment record inserted using NowPayments OrderID');
+            } catch (dbErr) {
+                console.error('❌ Error inserting payment into DB:', dbErr);
+            }
+
+            await bot.sendMessage(chatId, `✅ Click the link below to pay with TON:\n\n${paymentUrl}`);
+        } else {
+            await bot.sendMessage(chatId, '❌ Failed to create payment session. Please try again later.');
+        }
+
+    } catch (err) {
+        console.error('❌ Error handling TON payment:', err);
+        await bot.sendMessage(chatId, '⚠️ An error occurred while generating your TON payment link.');
     }
+}
 
 
     if (data === 'back_to_payment') {
@@ -683,3 +830,4 @@ if (regularSpeedCallbacks.includes(data)) {
         text: '✅ Option selected.'
     });
 });
+
