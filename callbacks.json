@@ -1,22 +1,25 @@
-{
-  "callbackToServer": {
-    "speed_ger": "Ger27",
-    "speed_sweden": "Sw84",
-    "speed_sp": "Sp01",
-    "speed_ir": "IRAN",
-    "speed_it": "IT01",
-    "speed_arm": "Arm01",
-    "speed_usa": "US08",
-    "speed_uk": "UK37"
-  },
-  "callbackToInternationalServer": {
-    "int_speed_ger": "Ger27",
-    "int_speed_sweden": "Sw84",
-    "int_speed_sp": "Sp01",
-    "int_speed_ir": "IRAN",
-    "int_speed_it": "IT01",
-    "int_speed_arm": "Arm01",
-    "int_speed_usa": "US08",
-    "int_speed_uk": "UK37"
-  }
-}
+  1 {
+  2   "callbackToServer": {
+  3     "speed_ger": "Ger27",
+  4     "speed_sweden": "Sw84",
+  5     "speed_sp": "Sp01",
+  6     "speed_ir": "IRAN",
+  7     "speed_it": "IT01",
+  8     "speed_arm": "Arm01",
+  9     "speed_uae": "UAE11",
+ 10     "speed_usa": "US08",
+ 11     "speed_uk": "UK37"
+ 12   },
+ 13   "callbackToInternationalServer": {
+ 14     "int_speed_ger": "Ger27",
+ 15     "int_speed_sweden": "Sw84",
+ 16     "int_speed_sp": "Sp01",
+ 17     "int_speed_ir": "IRAN",
+ 18     "int_speed_it": "IT01",
+ 19     "int_speed_arm": "Arm01",
+ 20     "speed_speed_uae": "UAE11",
+ 21     "int_speed_usa": "US08",
+ 22     "int_speed_uk": "UK37"
+ 23   }
+ 24 }
+ 25 
