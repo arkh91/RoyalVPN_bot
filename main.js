@@ -9,12 +9,22 @@ const checkBalance = require('./checkBalance');
 const { getKeyStatusResponseMessage } = require('./KeyStatus');
 const checkEligible = require ('./checkEligibility');
 const Game_Arena_checkEligible = require ('./Game_Arena_checkEligibility');
+//const webhookRoutes = require('./webhook');
 const getUserBalance = require('./db/getUserBalance'); // adjust path as needed
 const deductBalance = require('./db/deductBalance');   // same here
+//const { checkBalance, updatePendingPayments } = require('./payments');
+//const { updatePendingPayments } = require('./payments');
 const db = require('./db');
+const mysql = require('mysql');
+console.log("✅ MySQL module loaded successfully");
+//const { randomUUID } = require('crypto');
 const getNowPaymentsStatus = require('./getNowPaymentsStatus');
 const updatePendingPayments = require('./updatePendingPayments');
+//const getNowPaymentsInvoiceStatus = require('./getNowPaymentsStatus');
 const fs = require('fs');
+//const getNowPaymentsInvoiceStatus = require("../getNowPaymentsInvoiceStatus");
+const getNowPaymentsInvoiceStatus = require('./getNowPaymentsInvoiceStatus');
+
 
 let callbackToServer = {};
 let callbackToInternationalServer = {};
@@ -23,9 +33,9 @@ let callbackToInternationalServer = {};
 
 const token = ''; //RoyalVPN
 //const token = ''; //Test
-
+//const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
-//const NOWPAYMENTS_API_KEY = '';
+//const NOWPAYMENTS_API_KEY = '4PPCTPB-385MXPM-N5DBCGX-KV64DPY';
 
 const createNowPaymentsSession = require('./createNowPaymentsSession');
 
@@ -62,6 +72,9 @@ const bot = new TelegramBot(token, {
         params: { timeout: 10 }
     }
 });
+
+// Export for use in webhook.js
+//module.exports = bot;
 
 
 const mainMenu = {
@@ -146,7 +159,15 @@ const subMenus = {
             ]
         }
     },
-    
+    /*menu_INT: {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: 'Game', callback_data: 'sub_1_game' }],
+                [{ text: 'High Speed', callback_data: 'sub_1_speed' }],
+                [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
+            ]
+        }
+    },*/
     sub_INT_speed: {
         text: '⚡ Choose a high-speed location for fast and secure internet: 🌐',
         reply_markup: {
@@ -187,7 +208,11 @@ const subMenus = {
 	
 
 };
-
+/*
+async function checkBalance(userId) {
+    return true; // Replace with actual DB logic later
+}
+*/
 (async () => {
     const result = await checkBalance(123456);
     console.log('Balance check result:', result);
@@ -231,7 +256,7 @@ bot.onText(/\/payment/, (msg) => {
         reply_markup: {
             inline_keyboard: [
                 [{ text: 'Direct (Credit Card)', callback_data: 'pay_direct' }],
-                [{ text: 'Digital Currency', callback_data: 'pay_nowpayment' }],
+                [{ text: 'Crypto Currency', callback_data: 'pay_nowpayment' }],
                 [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
             ]
         }
@@ -239,118 +264,69 @@ bot.onText(/\/payment/, (msg) => {
 });
 
 
-/*
+// Show balance
 bot.onText(/\/balance/, async (msg) => {
   const chatId = msg.chat.id;
-  const userId = msg.from.id;
+  const userId = msg.from.id; // Telegram user ID
 
   try {
-    const balance = await checkBalance(userId);
-    if (balance === null) {
-      await bot.sendMessage(chatId, '⚠️ Your account was not found.');
-    } else {
-      await bot.sendMessage(chatId, 
-  `💰 *Your Current Balance:* \`${balance} USD\`\n\nTo make a payment, simply type /payment or select it from the menu below.`,
-  {
-    parse_mode: 'Markdown',
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '🔙 Go Back', callback_data: 'back_to_main' }]
-      ]
-    }
-  }
-);
+    // get all user payments
+    const [payments] = await db.execute(
+      "SELECT * FROM payments WHERE UserID = ?",
+      [userId]
+    );
 
-    }
-  } catch (err) {
-    await bot.sendMessage(chatId, '❌ An error occurred while checking your balance.');
-    nsole.error('Balance check error:', err);
-  }
-});
+    let balance = 0;
+    const updates = [];
 
+    for (const payment of payments) {
+      if (payment.Status === "finished") {
+        balance += parseFloat(payment.Amount || 0);
+        continue;
+      }
 
-bot.onText(/\/balance/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
+      // 🔍 check NowPayments invoice status
+      const invoiceStatus = await getNowPaymentsInvoiceStatus(payment.PaymentID);
 
-  try {
-    // 1. First check for completed payments
-    const completedPayments = await getNowPaymentsStatus(userId);
-    
-    // 2. If any payments were completed, notify user
-    if (completedPayments.length > 0) {
-      for (const payment of completedPayments) {
-        await bot.sendMessage(
-          chatId,
-          `✅ Payment completed!\n` +
-          `Amount: ${payment.apiData.actually_paid} ${payment.apiData.pay_currency}\n` +
-          `USD Value: $${payment.apiData.price_amount}`
+      if (!invoiceStatus) continue;
+
+      if (invoiceStatus.status === "finished") {
+        // update payments table
+        await db.execute(
+          "UPDATE payments SET Status = 'finished' WHERE OrderID = ?",
+          [payment.OrderID]
         );
+
+        const amount = parseFloat(invoiceStatus.price_amount) || 0;
+        balance += amount;
+
+        // update accounts table
+        await db.execute(
+          "UPDATE accounts SET CurrentBalance = COALESCE(CurrentBalance,0)+? WHERE UserID=?",
+          [amount, userId]
+        );
+
+        updates.push({ OrderID: payment.OrderID, status: "finished", amount });
       }
     }
 
-    // 3. Show current balance
-    const balance = await checkBalance(userId);
-    await bot.sendMessage(
-      chatId,
-      `💰 Your balance: $${balance}\n` +
-      `📊 Recent payments: ${completedPayments.length} completed`
+    // get current balance from accounts
+    const [[account]] = await db.execute(
+      "SELECT CurrentBalance FROM accounts WHERE UserID = ?",
+      [userId]
     );
 
+    const finalBalance = account?.CurrentBalance || balance;
+
+    bot.sendMessage(
+      chatId,
+      `🆔 Your UserID: ${userId}\n💰 Balance: ${finalBalance}\n\nRecent updates: ${updates.length}`
+    );
   } catch (error) {
-    console.error('Balance check error:', error);
-    await bot.sendMessage(chatId, '⚠️ Error checking balance. Please try again.');
+    console.error("❌ Error in /userid:", error);
+    bot.sendMessage(chatId, "⚠️ Error checking your balance. Try again later.");
   }
 });
-*/
-bot.onText(/\/balance/, async (msg) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-
-    try {
-        // 1. Find all orders for this user
-        const [orders] = await db.execute(
-            "SELECT OrderID FROM payments WHERE UserID = ? AND Status != 'finished'",
-            [userId]
-        );
-
-        // 2. Check each order's status
-        for (const { OrderID } of orders) {
-            const status = await getNowPaymentsStatus(OrderID);
-            
-            if (status.status === 'finished') {
-                await db.execute(
-                    "UPDATE payments SET Status = 'finished' WHERE OrderID = ?",
-                    [OrderID]
-                );
-                
-                // Convert to number before adding to balance
-                const amount = parseFloat(status.usdValue) || 0;
-                await db.execute(
-                    "UPDATE accounts SET CurrentBalance = COALESCE(CurrentBalance, 0) + ? WHERE UserID = ?",
-                    [amount, userId]
-                );
-            }
-        }
-
-        // 3. Get current balance safely
-        const [account] = await db.execute(
-            "SELECT COALESCE(CurrentBalance, 0) AS balance FROM accounts WHERE UserID = ?",
-            [userId]
-        );
-        
-        const balance = Number(account[0]?.balance) || 0;
-        await bot.sendMessage(
-            chatId,
-            `💰 Your balance: $${balance.toFixed(2)}`
-        );
-
-    } catch (error) {
-        console.error('Balance check error:', error);
-        await bot.sendMessage(chatId, 'Error checking balance. Please try again.');
-    }
-});
-
 
 
 
@@ -366,7 +342,7 @@ bot.on('message', async (msg) => {
     if (!text || text.startsWith('/KeyStatus')) return;
 
     if (waitingForKey.has(chatId)) {
-        waitingForKey.delete(chatId);
+        waitingForKey.delete (chatId);
         try {
             const result = await getKeyStatusResponseMessage(text);
             bot.sendMessage(chatId, result, { parse_mode: 'Markdown' });
@@ -375,6 +351,54 @@ bot.on('message', async (msg) => {
         }
     }
 });
+
+// 🌐 Mapping for Internatinal Accounts
+
+bot.onText(/^\/userbalance (.+)$/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const ADMIN_ID = 542797568;
+
+    if (msg.from.id !== ADMIN_ID) {
+        bot.sendMessage(chatId, '❌ Error: No admin detected!');
+        return;
+    }
+
+    //const username = match[1].trim();
+	// Trim and remove leading @ if present
+    const username = match[1].trim().replace(/^@/, '');
+
+    const sql = `
+        SELECT UserID, FirstName, LastName, Username, CurrentBalance 
+        FROM accounts 
+        WHERE LOWER(Username) = LOWER(?)
+        LIMIT 1
+    `;
+
+    try {
+        // Use promise-based query
+        const [results] = await db.query(sql, [username]);
+
+        if (!results || results.length === 0) {
+            bot.sendMessage(chatId, `⚠️ No account found for username: ${username}`);
+            return;
+        }
+
+        const user = results[0];
+        const response =
+`💳 Balance Info:
+UserID: ${user.UserID}
+FirstName: ${user.FirstName || "-"}
+LastName: ${user.LastName || "-"}
+Username: ${user.Username || "-"}
+CurrentBalance: ${user.CurrentBalance}`;
+
+        bot.sendMessage(chatId, response);
+    } catch (err) {
+        console.error("DB Error:", err);
+        bot.sendMessage(chatId, "❌ Database error.");
+    }
+});
+
 
     	
 bot.on('callback_query', async (query) => {
@@ -452,7 +476,26 @@ bot.on('callback_query', async (query) => {
         });
     }
 
+    // SPECIFIC PAYMENT SUBMENUS
+/*
+    if (paymentsSubMenus[data]) {
+        const submenu = paymentsSubMenus[data];
+        return bot.editMessageText(submenu.text, {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: submenu.reply_markup
+        });
+    }
 
+if (paymentsSubMenus && paymentsSubMenus[data]) {
+    const submenu = paymentsSubMenus[data];
+    return bot.editMessageText(submenu.text, {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: submenu.reply_markup
+    });
+}
+*/
     // BACK TO MAIN MENU
     if (data === 'back_to_main') {
         return bot.editMessageText(
@@ -646,7 +689,32 @@ bot.on('callback_query', async (query) => {
             }
         });
     }
+/*
+    if (data.startsWith('doge_pay_')) {
+        const amount = data.replace('doge_pay_', '');
+        const currency = 'DOGE';
 
+        try {
+            // Edit the original message
+            await bot.editMessageText(`🪙 Generating Dogecoin payment session for $${amount}`, {
+                chat_id: chatId,
+                message_id: messageId
+            });
+
+            // Generate payment session
+            const paymentUrl = await createNowPaymentsSession(chatId, amount, currency);
+
+            if (paymentUrl) {
+                await bot.sendMessage(chatId, `✅ Click the link below to pay with Dogecoin:\n\n${paymentUrl}`);
+            } else {
+                await bot.sendMessage(chatId, '❌ Failed to create payment session. Please try again later.');
+            }
+        } catch (err) {
+            console.error('❌ Error handling Dogecoin payment:', err);
+            await bot.sendMessage(chatId, '⚠️ An error occurred while generating your Dogecoin payment link.');
+        }
+    }
+*/
     if (data.startsWith('doge_pay_')) {
     	const amount = data.replace('doge_pay_', '');
     	const currency = 'DOGE';
@@ -818,7 +886,7 @@ if (data.startsWith('ton_pay_')) {
             reply_markup: {
                 inline_keyboard: [
                     [{ text: 'Direct (Credit Card)', callback_data: 'pay_direct' }],
-                    [{ text: 'Digital Currency', callback_data: 'pay_nowpayment' }],
+                    [{ text: 'Crypto Currency', callback_data: 'pay_nowpayment' }],
                     [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
                 ]
             }
@@ -831,3 +899,7 @@ if (data.startsWith('ton_pay_')) {
     });
 });
 
+// Start Express server
+//app.listen(3000, () => {
+    //console.log('� Express server running on port 3000');
+//});
