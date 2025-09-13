@@ -31,8 +31,8 @@ let callbackToInternationalServer = {};
 
 
 
-const token = ''; //RoyalVPN
-//const token = ''; //Test
+//const token = ''; //RoyalVPN
+const token = ''; //Test
 //const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
 //const NOWPAYMENTS_API_KEY = '';
@@ -234,20 +234,6 @@ bot.onText(/\/start/, async (msg) => {
     );
 });
 
-bot.onText(/\/userid/, (msg) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-    const username = msg.from.username || 'No username';
-    const firstName = msg.from.first_name || '';
-    const lastName = msg.from.last_name || '';
-
-    const message = `👤 *User Information*\n\n` +
-    `🆔 *User ID:* \`${userId}\`\n` +
-    `🔖 *Username:* @${username}\n` +
-    `📛 *Full Name:* ${firstName} ${lastName}`.trim();
-
-    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-});
 
 bot.onText(/\/payment/, (msg) => {
     const chatId = msg.chat.id;
@@ -262,6 +248,43 @@ bot.onText(/\/payment/, (msg) => {
         }
     });
 });
+
+bot.onText(/\/userid/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const username = msg.from.username || 'No username';
+    const firstName = msg.from.first_name || '';
+    const lastName = msg.from.last_name || '';
+
+    const sql = `
+        SELECT CurrentBalance 
+        FROM accounts 
+        WHERE UserID = ?
+        LIMIT 1
+    `;
+
+    try {
+        const [results] = await db.query(sql, [userId]);
+
+        let balance = 'Not found';
+        if (results && results.length > 0) {
+            balance = `$${Number(results[0].CurrentBalance).toFixed(2)}`;
+        }
+
+        const message =
+            `👤 *User Information*\n\n` +
+            `🆔 *User ID:* \`${userId}\`\n` +
+            `🔖 *Username:* ${username.startsWith('@') ? username : '@' + username}\n` +
+            `📛 *Full Name:* ${firstName} ${lastName}\n` +
+            `💰 *Balance:* ${balance}`;
+
+        bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    } catch (err) {
+        console.error("DB Error:", err);
+        bot.sendMessage(chatId, "❌ Database error.");
+    }
+});
+
 
 
 // Show balance
@@ -384,13 +407,14 @@ bot.onText(/^\/userbalance (.+)$/, async (msg, match) => {
         }
 
         const user = results[0];
-        const response =
+        
+const response =
 `💳 Balance Info:
 UserID: ${user.UserID}
 FirstName: ${user.FirstName || "-"}
 LastName: ${user.LastName || "-"}
-Username: ${user.Username || "-"}
-CurrentBalance: ${user.CurrentBalance}`;
+Username: ${user.Username ? '@' + user.Username : "-"}
+CurrentBalance: $${Number(user.CurrentBalance).toFixed(2)}`;
 
         bot.sendMessage(chatId, response);
     } catch (err) {
@@ -399,6 +423,96 @@ CurrentBalance: ${user.CurrentBalance}`;
     }
 });
 
+
+bot.onText(/^\/usernameADDbalance (.+) (.+)$/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const ADMIN_ID = 542797568;
+
+    if (msg.from.id !== ADMIN_ID) {
+        bot.sendMessage(chatId, '❌ Error: No admin detected!');
+        return;
+    }
+
+    const username = match[1].trim().replace(/^@/, '');
+    const amount = parseFloat(match[2]);
+
+    if (isNaN(amount) || amount <= 0) {
+        bot.sendMessage(chatId, "⚠️ Invalid amount. Example: /usernameADDbalance arkh916058 5");
+        return;
+    }
+
+    try {
+        // 1. Get user from accounts
+        const [users] = await db.query(
+            `SELECT UserID, CurrentBalance FROM accounts WHERE LOWER(Username) = LOWER(?) LIMIT 1`,
+            [username]
+        );
+
+        if (!users || users.length === 0) {
+            bot.sendMessage(chatId, `⚠️ No account found for username: ${username}`);
+            return;
+        }
+
+        const user = users[0];
+        const userId = user.UserID;
+
+        // 2. Generate IDs
+        const now = new Date();
+        const pad = n => (n < 10 ? '0' + n : n);
+        const ddmmyyyy = `${pad(now.getDate())}${pad(now.getMonth() + 1)}${now.getFullYear()}`;
+        const hhmmss = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+        const orderId = `${ddmmyyyy}-${hhmmss}`;
+        const paymentId = orderId;
+        const invoiceId = orderId;
+
+        // 3. Insert payment record
+        const insertQuery = `
+            INSERT INTO payments 
+            (UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount, Currency, AmountPaidInUSD, CurrentRateToUSD, Status, Comments, OrderID, PaymentID, invoiceID) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `;
+        const insertParams = [
+            userId,
+            now,
+            'Rial',
+            0, // numeric field
+            'Rial',
+            amount,
+            0, // numeric field
+            'Pending',
+            'Pending via TelegramBot',
+            orderId,
+            paymentId,
+            invoiceId
+        ];
+        await db.query(insertQuery, insertParams);
+
+        // 4. Update account balance
+        const updateQuery = `
+            UPDATE accounts 
+            SET CurrentBalance = CurrentBalance + ? 
+            WHERE UserID = ?
+        `;
+        await db.query(updateQuery, [amount, userId]);
+
+        // 5. Fetch new balance
+        const [updatedUser] = await db.query(
+            `SELECT CurrentBalance FROM accounts WHERE UserID = ? LIMIT 1`,
+            [userId]
+        );
+
+        const newBalance = updatedUser[0].CurrentBalance;
+
+        // 6. Send success response
+        bot.sendMessage(
+            chatId,
+            `✅ Successfully added $${amount.toFixed(2)} to @${username}'s balance.\n💰 New Balance: $${Number(newBalance).toFixed(2)}`
+        );
+    } catch (err) {
+        console.error("DB Error:", err);
+        bot.sendMessage(chatId, "❌ Database error.");
+    }
+});
 
     	
 bot.on('callback_query', async (query) => {
@@ -508,15 +622,15 @@ if (paymentsSubMenus && paymentsSubMenus[data]) {
         );
     }
    
- 
-    if (data.startsWith('bw_') || data.startsWith('int_bw_')) {
-    	const isInternational = data.startsWith('int_bw_');
-	console.log(`⚡ BW Selection: data=${data}, isInternational=${isInternational}`);
-	const bandwidthGb = parseInt(data.replace(isInternational ? 'int_bw_' : 'bw_', ''), 10);
+	if (data.startsWith('bw_') || data.startsWith('int_bw_')) {
+    		const isInternational = data.startsWith('int_bw_');
+    		console.log(`⚡ BW Selection: data=${data}, isInternational=${isInternational}`);
+    		const bandwidthGb = parseInt(data.replace(isInternational ? 'int_bw_' : 'bw_', ''), 10);
 
     	const bandwidthPrices = {
-        	50: 1.29,
-		70: 1.95,
+        	40: 1.00,
+			50: 1.29,
+        	70: 1.95,
         	100: 2.33,
         	300: 5.60,
         	500: 9.30,
@@ -526,51 +640,57 @@ if (paymentsSubMenus && paymentsSubMenus[data]) {
     	const requiredAmount = bandwidthPrices[bandwidthGb];
     	const session = bot.session?.[userId];
 
+    	// Check server selection
     	if (!session || !session.selectedServer) {
         	await bot.sendMessage(chatId, '❌ Error: No server selected. Please start again.');
         	return;
     	}
 
+    	// 🚦 Application-level lock (per-user)
+    	if (session.inProgress) {
+        	await bot.sendMessage(chatId, "⏳ Your request is already being processed. Please wait...");
+        	return;
+    	}
+    	session.inProgress = true;
+
     	const selectedServer = session.selectedServer;
 
     	try {
         	const eligible = await checkEligible(userId, chatId, bot);
-        	const balanceValue = await getUserBalance(userId);
+       		const balanceValue = await getUserBalance(userId);
 
         	console.log(`User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Required: $${requiredAmount}`);
 
-        // Not enough balance
+        	// Not enough balance
         	if (!eligible && balanceValue < requiredAmount) {
             		await bot.sendMessage(
-                		chatId,
-                		`❌ You need at least $${requiredAmount.toFixed(2)} to buy ${bandwidthGb} GB.\nYour current balance: $${balanceValue.toFixed(2)}.\n\nUse /payment to top up.`
-            		);
-            		return;
+                	chatId,
+                	`❌ You need at least $${requiredAmount.toFixed(2)} to buy ${bandwidthGb} GB.\nYour current balance: $${balanceValue.toFixed(2)}.\n\nUse /payment to top up.`
+            	);
+            	return;
         	}
 
-        // VIP info
+        	// VIP info
         	if (eligible) {
             		await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
         	}
 
-        // ✅ Key generation logic
+        	// ✅ Key generation logic
         	if (isInternational) {
-	    		//console.log('🌐 INTERNATIONAL: selectedServer =', selectedServer);
             		const result = await createInternationalKey(userId, selectedServer, bandwidthGb, 30);
             		await bot.sendMessage(chatId,
                 	`✅ Your *International* access key:\n\`${result.key}\`\n🌍 Server: ${result.server}\n⏳ Expires in: ${result.expiresIn} days`,
-                		{ parse_mode: 'Markdown' }
+                	{ parse_mode: 'Markdown' }
             		);
-	    //await bot.sendMessage(chatId, `✅ Your access key:\n\`${result.Key}\``, { parse_mode: 'Markdown' });
         	} else {
             		const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
             		await bot.sendMessage(chatId,
-                		`✅ Your access key:\n\`${newKey}\``,
-                		{ parse_mode: 'Markdown' }
-            		);
+                	`✅ Your access key:\n\`${newKey}\``,
+                	{ parse_mode: 'Markdown' }
+            	);
         	}
 
-        // Deduct for non-VIP
+        	// Deduct for non-VIP
         	if (!eligible) {
             		await deductBalance(userId, requiredAmount);
             		await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
@@ -579,11 +699,12 @@ if (paymentsSubMenus && paymentsSubMenus[data]) {
     	} catch (err) {
         	console.error('❌ Error in bandwidth purchase:', err);
         	await bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
+    	} finally {
+        	// 🔒 Always release lock & cleanup session
+        	delete bot.session[userId];
     	}
 
-    	// 🔒 Cleanup session
-    	delete bot.session[userId];
-    	return;	
+    	return;
     }
 
 
@@ -689,32 +810,7 @@ if (paymentsSubMenus && paymentsSubMenus[data]) {
             }
         });
     }
-/*
-    if (data.startsWith('doge_pay_')) {
-        const amount = data.replace('doge_pay_', '');
-        const currency = 'DOGE';
 
-        try {
-            // Edit the original message
-            await bot.editMessageText(`🪙 Generating Dogecoin payment session for $${amount}`, {
-                chat_id: chatId,
-                message_id: messageId
-            });
-
-            // Generate payment session
-            const paymentUrl = await createNowPaymentsSession(chatId, amount, currency);
-
-            if (paymentUrl) {
-                await bot.sendMessage(chatId, `✅ Click the link below to pay with Dogecoin:\n\n${paymentUrl}`);
-            } else {
-                await bot.sendMessage(chatId, '❌ Failed to create payment session. Please try again later.');
-            }
-        } catch (err) {
-            console.error('❌ Error handling Dogecoin payment:', err);
-            await bot.sendMessage(chatId, '⚠️ An error occurred while generating your Dogecoin payment link.');
-        }
-    }
-*/
     if (data.startsWith('doge_pay_')) {
     	const amount = data.replace('doge_pay_', '');
     	const currency = 'DOGE';
