@@ -359,6 +359,7 @@ bot.onText(/\/KeyStatus/, (msg) => {
     waitingForKey.add(chatId);
 });
 
+/*
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text?.trim();
@@ -374,6 +375,44 @@ bot.on('message', async (msg) => {
         }
     }
 });
+*/
+bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text?.trim();
+    const ADMIN_ID = 542797568;
+
+    // Ignore empty messages
+    if (!text) return;
+
+    // Handle /KeyStatus command
+    if (text.startsWith('/KeyStatus')) {
+        if (waitingForKey.has(chatId)) {
+            waitingForKey.delete(chatId);
+            try {
+                const result = await getKeyStatusResponseMessage(text);
+                bot.sendMessage(chatId, result, { parse_mode: 'Markdown' });
+            } catch (err) {
+                bot.sendMessage(chatId, `❌ Error: ${err.message}`);
+            }
+        }
+        return;
+    }
+
+    // Forward all other non-command messages to admin
+    if (!text.startsWith('/')) {
+        bot.forwardMessage(ADMIN_ID, chatId, msg.message_id);
+
+        // (Optional) notify you who sent it
+        bot.sendMessage(
+    		ADMIN_ID,
+    		`📩 Forwarded message from ${msg.from.username ? '@' + msg.from.username : msg.from.first_name} \nID: \`${msg.from.id}\``,
+    		{ parse_mode: 'MarkdownV2' }
+	);
+
+    }
+});
+
+
 
 // 🌐 Mapping for Internatinal Accounts
 
@@ -408,13 +447,13 @@ bot.onText(/^\/userbalance (.+)$/, async (msg, match) => {
 
         const user = results[0];
         
-const response =
-`💳 Balance Info:
-UserID: ${user.UserID}
-FirstName: ${user.FirstName || "-"}
-LastName: ${user.LastName || "-"}
-Username: ${user.Username ? '@' + user.Username : "-"}
-CurrentBalance: $${Number(user.CurrentBalance).toFixed(2)}`;
+	const response =
+	`💳 Balance Info:
+	UserID: ${user.UserID}
+	FirstName: ${user.FirstName || "-"}
+	LastName: ${user.LastName || "-"}
+	Username: ${user.Username ? '@' + user.Username : "-"}
+	CurrentBalance: $${Number(user.CurrentBalance).toFixed(2)}`;
 
         bot.sendMessage(chatId, response);
     } catch (err) {
@@ -514,6 +553,35 @@ bot.onText(/^\/usernameADDbalance (.+) (.+)$/, async (msg, match) => {
     }
 });
 
+bot.onText(/\/sendMessage (\d+) "(.*)"/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const ADMIN_ID = 542797568;
+
+    // Admin check
+    if (msg.from.id !== ADMIN_ID) {
+        bot.sendMessage(chatId, '❌ Error: No admin detected!');
+        return;
+    }
+
+    if (!match || match.length < 3) {
+        bot.sendMessage(chatId, "⚠️ Usage: /sendMessage <userID> \"<message>\"");
+        return;
+    }
+
+    const userId = match[1];   // group 1 = userID
+    const message = match[2];  // group 2 = text inside quotes
+
+    try {
+        await bot.sendMessage(userId, message);
+//        bot.sendMessage(chatId, `✅ Message sent to ${userId}`);
+    bot.sendMessage(chatId, `✅ Message ("${message}") sent to ${userId}`);
+
+    } catch (err) {
+        console.error("Error sending message:", err);
+        bot.sendMessage(chatId, `❌ Failed to send message to ${userId}`);
+    }
+});
+
     	
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
@@ -590,26 +658,6 @@ bot.on('callback_query', async (query) => {
         });
     }
 
-    // SPECIFIC PAYMENT SUBMENUS
-/*
-    if (paymentsSubMenus[data]) {
-        const submenu = paymentsSubMenus[data];
-        return bot.editMessageText(submenu.text, {
-            chat_id: chatId,
-            message_id: messageId,
-            reply_markup: submenu.reply_markup
-        });
-    }
-
-if (paymentsSubMenus && paymentsSubMenus[data]) {
-    const submenu = paymentsSubMenus[data];
-    return bot.editMessageText(submenu.text, {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: submenu.reply_markup
-    });
-}
-*/
     // BACK TO MAIN MENU
     if (data === 'back_to_main') {
         return bot.editMessageText(
@@ -629,7 +677,7 @@ if (paymentsSubMenus && paymentsSubMenus[data]) {
 
     	const bandwidthPrices = {
         	40: 1.00,
-			50: 1.29,
+		50: 1.29,
         	70: 1.95,
         	100: 2.33,
         	300: 5.60,
