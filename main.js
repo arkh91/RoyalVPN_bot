@@ -149,11 +149,12 @@ const subMenus = {
         text: 'Select the 30-day Outline bandwidth limit:',
         reply_markup: {
             inline_keyboard: [
+		[{ text: '40 GB / 1.10 USD', callback_data: 'bw_40' }],
                 [{ text: '50 GB / 1.29 USD', callback_data: 'bw_50' }],
 		[{ text: '70 GB / 1.95 USD', callback_data: 'bw_70' }],
                 [{ text: '100 GB / 2.33 USD', callback_data: 'bw_100' }],
                 [{ text: '300 GB / 5.60 USD', callback_data: 'bw_300' }],
-                [{ text: '500 GB / 9.30 USD', callback_data: 'bw_500' }],
+                //[{ text: '500 GB / 9.30 USD', callback_data: 'bw_500' }],
                 [{ text: '1000 GB / 16.99 USD', callback_data: 'bw_1000' }],
                 [{ text: '⬅️ Go Back', callback_data: 'sub_1_speed' }]
             ]
@@ -250,7 +251,8 @@ bot.onText(/\/payment/, (msg) => {
     });
 });
 
-bot.onText(/\/userid/, async (msg) => {
+bot.onText(/^\/userid$/, async (msg) => {
+//bot.onText(/\/userid/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
     const username = msg.from.username || 'No username';
@@ -444,6 +446,71 @@ bot.onText(/^\/userbalance (.+)$/, async (msg, match) => {
 });
 
 
+
+bot.onText(/^\/userbalanceuserID (\d+)$/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const senderId = msg.from.id;
+
+    try {
+        // 1) Check sender is active admin
+        const [adminRows] = await db.execute(
+            'SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 LIMIT 1',
+            [senderId]
+        );
+
+        if (adminRows.length === 0) {
+            await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
+            return;
+        }
+
+        const role = adminRows[0].Role;
+        if (role !== 'admin' && role !== 'superadmin') {
+            await bot.sendMessage(chatId, '❌ Error: You do not have permission.');
+            return;
+        }
+
+        // 2) Validate input
+        const userId = parseInt(match[1]);
+        if (isNaN(userId)) {
+            bot.sendMessage(chatId, "⚠️ Invalid UserID. Example: /userbalanceuserID 12345");
+            return;
+        }
+
+        // 3) Query account
+        const sql = `
+            SELECT UserID, FirstName, LastName, Username, CurrentBalance 
+            FROM accounts 
+            WHERE UserID = ?
+            LIMIT 1
+        `;
+        const [results] = await db.query(sql, [userId]);
+
+        if (!results || results.length === 0) {
+            bot.sendMessage(chatId, `⚠️ No account found for UserID: ${userId}`);
+            return;
+        }
+
+        const user = results[0];
+
+        // 4) Build response (Markdown inline formatting)
+        const message =
+`👤 *User Information*
+
+🆔 *User ID:* \`${user.UserID}\`
+🔖 *Username:* ${user.Username ? '@' + user.Username : "-"}
+📛 *Full Name:* ${user.FirstName || "-"} ${user.LastName || "-"}
+💰 *Balance:* $${Number(user.CurrentBalance).toFixed(2)}`;
+
+        // 5) Send
+        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+
+    } catch (err) {
+        console.error("DB Error:", err);
+        bot.sendMessage(chatId, "❌ Database error.");
+    }
+});
+
+
 bot.onText(/^\/usernameADDbalance (.+) (.+)$/, async (msg, match) => {
     const chatId = msg.chat.id;
     const ADMIN_ID = 542797568;
@@ -533,6 +600,110 @@ bot.onText(/^\/usernameADDbalance (.+) (.+)$/, async (msg, match) => {
         bot.sendMessage(chatId, "❌ Database error.");
     }
 });
+
+// /useridADDbalance <UserID> <amount>
+bot.onText(/\/useridADDbalance (\d+) (\d+(\.\d+)?)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const senderId = msg.from.id;
+
+    try {
+        // 1) Check sender is active admin
+        const [adminRows] = await db.execute(
+            'SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 LIMIT 1',
+            [senderId]
+        );
+
+        if (adminRows.length === 0) {
+            await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
+            return;
+        }
+
+        const role = adminRows[0].Role;
+        if (role !== 'admin' && role !== 'superadmin') {
+            await bot.sendMessage(chatId, '❌ Error: You do not have permission.');
+            return;
+        }
+
+        // Extract params
+        const userId = parseInt(match[1]);
+        const amount = parseFloat(match[2]);
+
+        if (isNaN(userId) || isNaN(amount) || amount <= 0) {
+            bot.sendMessage(chatId, "⚠️ Invalid usage. Example: /useridADDbalance 12345 5");
+            return;
+        }
+
+        // 2. Get user from accounts
+        const [users] = await db.query(
+            `SELECT UserID, Username, CurrentBalance FROM accounts WHERE UserID = ? LIMIT 1`,
+            [userId]
+        );
+
+        if (!users || users.length === 0) {
+            bot.sendMessage(chatId, `⚠️ No account found for UserID: ${userId}`);
+            return;
+        }
+
+        const user = users[0];
+
+        // 3. Generate IDs
+        const now = new Date();
+        const pad = n => (n < 10 ? '0' + n : n);
+        const ddmmyyyy = `${pad(now.getDate())}${pad(now.getMonth() + 1)}${now.getFullYear()}`;
+        const hhmmss = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+        const orderId = `${ddmmyyyy}-${hhmmss}`;
+        const paymentId = orderId;
+        const invoiceId = orderId;
+
+        // 4. Insert payment record
+        const insertQuery = `
+            INSERT INTO payments 
+            (UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount, Currency, AmountPaidInUSD, CurrentRateToUSD, Status, Comments, OrderID, PaymentID, invoiceID) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `;
+        const insertParams = [
+            userId,
+            now,
+            'Rial',
+            0,
+            'Rial',
+            amount,
+            0,
+            'Pending',
+            'Pending via TelegramBot',
+            orderId,
+            paymentId,
+            invoiceId
+        ];
+        await db.query(insertQuery, insertParams);
+
+        // 5. Update balance
+        const updateQuery = `
+            UPDATE accounts 
+            SET CurrentBalance = CurrentBalance + ? 
+            WHERE UserID = ?
+        `;
+        await db.query(updateQuery, [amount, userId]);
+
+        // 6. Fetch updated balance
+        const [updatedUser] = await db.query(
+            `SELECT CurrentBalance FROM accounts WHERE UserID = ? LIMIT 1`,
+            [userId]
+        );
+
+        const newBalance = updatedUser[0].CurrentBalance;
+
+        // 7. Success message
+        bot.sendMessage(
+            chatId,
+            `✅ Successfully added $${amount.toFixed(2)} to ${user.Username ? '@' + user.Username : 'UserID ' + userId}'s balance.\n💰 New Balance: $${Number(newBalance).toFixed(2)}`
+        );
+    } catch (err) {
+        console.error("DB Error:", err);
+        bot.sendMessage(chatId, "❌ Database error.");
+    }
+});
+
 
 bot.onText(/\/sendMessage (\d+) "(.*)"/, async (msg, match) => {
     const chatId = msg.chat.id;
@@ -727,7 +898,9 @@ bot.onText(/\/(hc|HiddenCommands)/, async (msg) => {
         const commandKeyboard = {
             reply_markup: {
                 keyboard: [
+		    ["/useridADDbalance"],
                     ["/usernameADDbalance"],
+		    ["/userbalanceuserID"],
                     ["/userbalance"],
                     ["/sendMessage"],
                     ["/keyusername"]
@@ -839,7 +1012,7 @@ bot.on('callback_query', async (query) => {
     		const bandwidthGb = parseInt(data.replace(isInternational ? 'int_bw_' : 'bw_', ''), 10);
 
     	const bandwidthPrices = {
-        	40: 1.00,
+        	40: 1.10,
 		50: 1.29,
         	70: 1.95,
         	100: 2.33,
@@ -1205,8 +1378,3 @@ if (data.startsWith('ton_pay_')) {
         text: '✅ Option selected.'
     });
 });
-
-// Start Express server
-//app.listen(3000, () => {
-    //console.log('� Express server running on port 3000');
-//});
