@@ -31,8 +31,8 @@ let callbackToInternationalServer = {};
 
 
 
-//const token = ''; //RoyalVPN
-const token = ''; //Test
+const token = ''; //RoyalVPN
+//const token = ''; //Test
 //const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
 //const NOWPAYMENTS_API_KEY = '';
@@ -127,7 +127,7 @@ const subMenus = {
                     { text: 'Sweden 🇸🇪', callback_data: 'speed_sweden' }
                 ],
                 [
-                    { text: 'Spain 🇪🇸', callback_data: 'speed_sp' },
+                    { text: 'Finland 🇫🇮 ', callback_data: 'speed_fin' },
                     //{ text: 'Iran 🇮🇷', callback_data: 'speed_ir' }
 		    { text: 'Italy 🇮🇹 ', callback_data: 'speed_it' }
                 ],
@@ -177,7 +177,8 @@ const subMenus = {
                     { text: 'Sweden 🇸🇪', callback_data: 'int_speed_sweden' }
                 ],
                 [
-                    { text: 'Spain 🇪🇸', callback_data: 'int_speed_sp' },
+                    //{ text: 'Spain 🇪🇸', callback_data: 'int_speed_sp' },
+                    { text: 'Finland 🇫 🇮  ', callback_data: 'int_speed_fin' },
                     { text: 'Iran 🇮🇷', callback_data: 'int_speed_ir' }
                 ],
                 [
@@ -359,33 +360,14 @@ bot.onText(/\/KeyStatus/, (msg) => {
     waitingForKey.add(chatId);
 });
 
-/*
-bot.on('message', async (msg) => {
-    const chatId = msg.chat.id;
-    const text = msg.text?.trim();
-    if (!text || text.startsWith('/KeyStatus')) return;
 
-    if (waitingForKey.has(chatId)) {
-        waitingForKey.delete (chatId);
-        try {
-            const result = await getKeyStatusResponseMessage(text);
-            bot.sendMessage(chatId, result, { parse_mode: 'Markdown' });
-        } catch (err) {
-            bot.sendMessage(chatId, `❌ Error: ${err.message}`);
-        }
-    }
-});
-*/
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text?.trim();
     const ADMIN_ID = 542797568;
 
-    // Ignore empty messages
-    if (!text) return;
-
-    // Handle /KeyStatus command
-    if (text.startsWith('/KeyStatus')) {
+    // Handle /KeyStatus command as before
+    if (text && text.startsWith('/KeyStatus')) {
         if (waitingForKey.has(chatId)) {
             waitingForKey.delete(chatId);
             try {
@@ -398,20 +380,19 @@ bot.on('message', async (msg) => {
         return;
     }
 
-    // Forward all other non-command messages to admin
-    if (!text.startsWith('/')) {
-        bot.forwardMessage(ADMIN_ID, chatId, msg.message_id);
+    // Ignore other bot commands (anything starting with "/")
+    if (text && text.startsWith('/')) return;
 
-        // (Optional) notify you who sent it
-        bot.sendMessage(
-    		ADMIN_ID,
-    		`📩 Forwarded message from ${msg.from.username ? '@' + msg.from.username : msg.from.first_name} \nID: \`${msg.from.id}\``,
-    		{ parse_mode: 'MarkdownV2' }
-	);
+    // Forward ALL other messages (text, photo, video, gif, doc, etc.)
+    bot.forwardMessage(ADMIN_ID, chatId, msg.message_id);
 
-    }
+    // Send sender info (tap-to-copy ID)
+    bot.sendMessage(
+        ADMIN_ID,
+        `📩 Forwarded message from ${msg.from.username ? '@' + msg.from.username : msg.from.first_name}\nID: \`${msg.from.id}\``,
+        { parse_mode: 'MarkdownV2' }
+    );
 });
-
 
 
 // 🌐 Mapping for Internatinal Accounts
@@ -579,6 +560,188 @@ bot.onText(/\/sendMessage (\d+) "(.*)"/, async (msg, match) => {
     } catch (err) {
         console.error("Error sending message:", err);
         bot.sendMessage(chatId, `❌ Failed to send message to ${userId}`);
+    }
+});
+
+
+bot.onText(/\/keyusername\s+@?([A-Za-z0-9_]+)/i, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const senderId = msg.from.id;
+  const targetUsername = match[1].trim();
+
+  try {
+    // 1) check sender is active admin
+    const [adminRows] = await db.execute(
+      'SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 LIMIT 1',
+      [senderId]
+    );
+
+    if (adminRows.length === 0) {
+      await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
+      return;
+    }
+    const role = adminRows[0].Role;
+    if (role !== 'admin' && role !== 'superadmin') {
+      await bot.sendMessage(chatId, '❌ Error: You do not have permission.');
+      return;
+    }
+
+    // 2) find UserID in Accounts table
+    const [accRows] = await db.execute(
+      'SELECT UserID FROM accounts WHERE Username = ? LIMIT 1',
+      [targetUsername]
+    );
+
+    if (accRows.length === 0) {
+      await bot.sendMessage(chatId, `❌ No account found with username @${targetUsername}`);
+      return;
+    }
+    const userId = accRows[0].UserID;
+
+    // 3) fetch keys
+    const [keyRows] = await db.execute(
+      'SELECT FullKey, IssuedAt FROM UserKeys WHERE UserID = ? ORDER BY IssuedAt DESC',
+      [userId]
+    );
+
+    if (keyRows.length === 0) {
+      await bot.sendMessage(chatId, `ℹ️ No keys found for @${targetUsername}`);
+      return;
+    }
+
+    // escape for HTML parse_mode
+    const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    const LIMIT = 50;
+    let response = `🔑 Keys for @${targetUsername} (UserID: ${userId}) — ${keyRows.length} total:\n\n`;
+    keyRows.slice(0, LIMIT).forEach((row, i) => {
+      response += `${i + 1}. FullKey: <code>${escapeHtml(row.FullKey)}</code>\n   IssuedAt: ${escapeHtml(row.IssuedAt)}\n\n`;
+    });
+    if (keyRows.length > LIMIT) {
+      response += `...(showing ${LIMIT} of ${keyRows.length}). For the full list, query the DB directly.`;
+    }
+
+    await bot.sendMessage(chatId, response, { parse_mode: 'HTML', disable_web_page_preview: true });
+
+  } catch (err) {
+    console.error('Keyusername error:', err);
+    await bot.sendMessage(chatId, `❌ Database error: ${err.code || err.message}`);
+  }
+});
+
+
+bot.onText(/\/keyuserid\s+@?([A-Za-z0-9_]+)/i, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const senderId = msg.from.id;
+  const target = match[1].trim();
+
+  try {
+    // 1) check sender is active admin
+    const [adminRows] = await db.execute(
+      'SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 LIMIT 1',
+      [senderId]
+    );
+
+    if (adminRows.length === 0) {
+      await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
+      return;
+    }
+    const role = adminRows[0].Role;
+    if (role !== 'admin' && role !== 'superadmin') {
+      await bot.sendMessage(chatId, '❌ Error: You do not have permission.');
+      return;
+    }
+
+    let userId;
+    if (/^\d+$/.test(target)) {
+      // 2a) numeric: treat as UserID
+      userId = target;
+    } else {
+      // 2b) string: look up by username in Accounts
+      const [accRows] = await db.execute(
+        'SELECT UserID FROM Accounts WHERE Username = ? LIMIT 1',
+        [target]
+      );
+
+      if (accRows.length === 0) {
+        await bot.sendMessage(chatId, `❌ No account found with username @${target}`);
+        return;
+      }
+      userId = accRows[0].UserID;
+    }
+
+    // 3) fetch keys issued in last 31 days
+    const [keyRows] = await db.execute(
+      `SELECT FullKey, IssuedAt 
+       FROM UserKeys 
+       WHERE UserID = ? AND IssuedAt >= NOW() - INTERVAL 31 DAY
+       ORDER BY IssuedAt DESC`,
+      [userId]
+    );
+
+    if (keyRows.length === 0) {
+      await bot.sendMessage(chatId, `ℹ️ No keys issued in the last 31 days for ${target}`);
+      return;
+    }
+
+    // escape HTML
+    const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    let response = `📅 Keys issued in last 31 days for ${target} (UserID: ${userId}):\n\n`;
+    keyRows.forEach((row, i) => {
+      response += `${i + 1}. FullKey: <code>${escapeHtml(row.FullKey)}</code>\n   IssuedAt: ${escapeHtml(row.IssuedAt)}\n\n`;
+    });
+
+    await bot.sendMessage(chatId, response, { parse_mode: 'HTML' });
+
+  } catch (err) {
+    console.error('keyuserid error:', err);
+    await bot.sendMessage(chatId, `❌ Database error: ${err.code || err.message}`);
+  }
+});
+
+// Hidden Commands (Admin Only)
+bot.onText(/\/(hc|HiddenCommands)/, async (msg) => {
+    const chatId = msg.chat.id;
+    const senderId = msg.from.id;
+
+    try {
+        // 1) Check sender is active admin
+        const [adminRows] = await db.execute(
+            'SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 LIMIT 1',
+            [senderId]
+        );
+
+        if (adminRows.length === 0) {
+            await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
+            return;
+        }
+
+        const role = adminRows[0].Role;
+        if (role !== 'admin' && role !== 'superadmin') {
+            await bot.sendMessage(chatId, '❌ Error: You do not have permission.');
+            return;
+        }
+
+        // 2) Reply keyboard with tappable commands
+        const commandKeyboard = {
+            reply_markup: {
+                keyboard: [
+                    ["/usernameADDbalance"],
+                    ["/userbalance"],
+                    ["/sendMessage"],
+                    ["/keyusername"]
+                ],
+                resize_keyboard: true,   // compact keyboard
+                one_time_keyboard: true  // auto-hide after use
+            }
+        };
+
+        await bot.sendMessage(chatId, "🔒 Hidden Commands:\nTap a command to auto-populate:", commandKeyboard);
+
+    } catch (err) {
+        console.error("Error checking admin:", err);
+        await bot.sendMessage(chatId, "⚠️ Internal error, please try again later.");
     }
 });
 
