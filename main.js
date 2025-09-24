@@ -9,7 +9,6 @@ const checkBalance = require('./checkBalance');
 const { getKeyStatusResponseMessage } = require('./KeyStatus');
 const checkEligible = require ('./checkEligibility');
 const Game_Arena_checkEligible = require ('./Game_Arena_checkEligibility');
-//const webhookRoutes = require('./webhook');
 const getUserBalance = require('./db/getUserBalance'); // adjust path as needed
 const deductBalance = require('./db/deductBalance');   // same here
 //const { checkBalance, updatePendingPayments } = require('./payments');
@@ -17,25 +16,25 @@ const deductBalance = require('./db/deductBalance');   // same here
 const db = require('./db');
 const mysql = require('mysql');
 console.log("✅ MySQL module loaded successfully");
-//const { randomUUID } = require('crypto');
 const getNowPaymentsStatus = require('./getNowPaymentsStatus');
 const updatePendingPayments = require('./updatePendingPayments');
 //const getNowPaymentsInvoiceStatus = require('./getNowPaymentsStatus');
 const fs = require('fs');
 //const getNowPaymentsInvoiceStatus = require("../getNowPaymentsInvoiceStatus");
 const getNowPaymentsInvoiceStatus = require('./getNowPaymentsInvoiceStatus');
-
+const KeyExists = require('./db/keyExists');
+//const KeyExists = require('./utils/keyExists');  // ✅ correct
 
 let callbackToServer = {};
 let callbackToInternationalServer = {};
 
 
 
-const token = ''; //RoyalVPN
-//const token = ''; //Test
+const token = '8089450002:AAGBg30giuM_aGMK-g5jfYnNvY_Mv4xyThA'; //RoyalVPN
+//const token = '6278626740:AAExqUoi32bo4XUkrt_ehk_tpNfpWhRgqBA'; //Test
 //const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
-//const NOWPAYMENTS_API_KEY = '';
+//const NOWPAYMENTS_API_KEY = '4PPCTPB-385MXPM-N5DBCGX-KV64DPY';
 
 const createNowPaymentsSession = require('./createNowPaymentsSession');
 
@@ -452,20 +451,18 @@ bot.onText(/^\/userbalanceuserID (\d+)$/, async (msg, match) => {
     const senderId = msg.from.id;
 
     try {
-        // 1) Check sender is active admin
-        const [adminRows] = await db.execute(
-            'SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 LIMIT 1',
+        // 1) Check sender is active admin using COUNT
+        const [countRows] = await db.execute(
+            `SELECT COUNT(AdminID) AS cnt
+             FROM Admins
+             WHERE UserID = ?
+               AND Role IN ('admin', 'superadmin')
+               AND IsActive = 1`,
             [senderId]
         );
 
-        if (adminRows.length === 0) {
+        if (countRows[0].cnt === 0) {
             await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
-            return;
-        }
-
-        const role = adminRows[0].Role;
-        if (role !== 'admin' && role !== 'superadmin') {
-            await bot.sendMessage(chatId, '❌ Error: You do not have permission.');
             return;
         }
 
@@ -513,13 +510,22 @@ bot.onText(/^\/userbalanceuserID (\d+)$/, async (msg, match) => {
 
 bot.onText(/^\/usernameADDbalance (.+) (.+)$/, async (msg, match) => {
     const chatId = msg.chat.id;
-    const ADMIN_ID = 542797568;
+    const senderId = msg.from.id;
+    
+	// 1) Check sender is active admin using COUNT
+        const [countRows] = await db.execute(
+            `SELECT COUNT(AdminID) AS cnt
+             FROM Admins
+             WHERE UserID = ?
+               AND Role IN ('admin', 'superadmin')
+               AND IsActive = 1`,
+            [senderId]
+        );
 
-    if (msg.from.id !== ADMIN_ID) {
-        bot.sendMessage(chatId, '❌ Error: No admin detected!');
-        return;
-    }
-
+        if (countRows[0].cnt === 0) {
+            await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
+            return;
+        }
     const username = match[1].trim().replace(/^@/, '');
     const amount = parseFloat(match[2]);
 
@@ -529,6 +535,22 @@ bot.onText(/^\/usernameADDbalance (.+) (.+)$/, async (msg, match) => {
     }
 
     try {
+ // 1) Check sender is active admin
+        const [adminRows] = await db.execute(
+            'SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 LIMIT 1',
+            [senderId]
+        );
+
+        if (adminRows.length === 0) {
+            await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
+            return;
+        }
+
+        const role = adminRows[0].Role;
+        if (role !== 'admin' && role !== 'superadmin') {
+            await bot.sendMessage(chatId, '❌ Error: You do not have permission.');
+            return;
+        }
         // 1. Get user from accounts
         const [users] = await db.query(
             `SELECT UserID, CurrentBalance FROM accounts WHERE LOWER(Username) = LOWER(?) LIMIT 1`,
@@ -607,20 +629,18 @@ bot.onText(/\/useridADDbalance (\d+) (\d+(\.\d+)?)/, async (msg, match) => {
     const senderId = msg.from.id;
 
     try {
-        // 1) Check sender is active admin
-        const [adminRows] = await db.execute(
-            'SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 LIMIT 1',
+        // 1) Check sender is active admin using COUNT
+        const [countRows] = await db.execute(
+            `SELECT COUNT(AdminID) AS cnt
+             FROM Admins
+             WHERE UserID = ?
+               AND Role IN ('admin', 'superadmin')
+               AND IsActive = 1`,
             [senderId]
         );
 
-        if (adminRows.length === 0) {
+        if (countRows[0].cnt === 0) {
             await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
-            return;
-        }
-
-        const role = adminRows[0].Role;
-        if (role !== 'admin' && role !== 'superadmin') {
-            await bot.sendMessage(chatId, '❌ Error: You do not have permission.');
             return;
         }
 
@@ -707,16 +727,10 @@ bot.onText(/\/useridADDbalance (\d+) (\d+(\.\d+)?)/, async (msg, match) => {
 
 bot.onText(/\/sendMessage (\d+) "(.*)"/, async (msg, match) => {
     const chatId = msg.chat.id;
-    const ADMIN_ID = 542797568;
+    const senderId = msg.from.id;
 
-    // Admin check
-    if (msg.from.id !== ADMIN_ID) {
-        bot.sendMessage(chatId, '❌ Error: No admin detected!');
-        return;
-    }
-
-    if (!match || match.length < 3) {
-        bot.sendMessage(chatId, "⚠️ Usage: /sendMessage <userID> \"<message>\"");
+    if (!match || match.length < 3 || match.length >= 4) {
+        bot.sendMessage(chatId, "⚠️  Usage: /sendMessage <userID> \"<message>\"");
         return;
     }
 
@@ -724,6 +738,21 @@ bot.onText(/\/sendMessage (\d+) "(.*)"/, async (msg, match) => {
     const message = match[2];  // group 2 = text inside quotes
 
     try {
+        // 1) Check sender is active admin using COUNT
+          const [countRows] = await db.execute(
+              `SELECT COUNT(AdminID) AS cnt
+               FROM Admins
+               WHERE UserID = ?
+                 AND Role IN ('admin', 'superadmin')
+                 AND IsActive = 1`,
+              [senderId]
+          );
+  
+          if (countRows[0].cnt === 0) {
+              await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
+              return;
+          }
+
         await bot.sendMessage(userId, message);
 //        bot.sendMessage(chatId, `✅ Message sent to ${userId}`);
     bot.sendMessage(chatId, `✅ Message ("${message}") sent to ${userId}`);
@@ -871,6 +900,134 @@ bot.onText(/\/keyuserid\s+@?([A-Za-z0-9_]+)/i, async (msg, match) => {
   }
 });
 
+
+bot.onText(/\/expiredkeys/, async (msg) => {
+    const chatId = msg.chat.id;
+    const senderId = msg.from.id; // Telegram user ID of sender
+
+    try {
+        // 1) Check sender is active admin using COUNT
+        const [countRows] = await db.execute(
+            `SELECT COUNT(AdminID) AS cnt
+             FROM Admins
+             WHERE UserID = ?
+               AND Role IN ('admin', 'superadmin')
+               AND IsActive = 1`,
+            [senderId]
+        );
+
+        if (countRows[0].cnt === 0) {
+            await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
+            return;
+        }
+
+        // 2) Fetch expired keys
+        const [rows] = await db.query(
+            `SELECT GuiKey, UserID
+             FROM UserKeys
+             WHERE DATE(IssuedAt) = CURDATE() - INTERVAL 30 DAY`
+        );
+
+        if (rows.length === 0) {
+            await bot.sendMessage(chatId, "✅ No expired keys found today.");
+            return;
+        }
+
+        // 3) Build response
+        let message = "🔑 *Expired Keys (30 days old)*\n\n";
+        rows.forEach(row => {
+            message += `👤 UserID: \`${row.UserID}\`\n🔑 GuiKey: \`${row.GuiKey}\`\n\n`;
+        });
+
+        await bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
+
+    } catch (error) {
+        console.error("Error fetching expired keys:", error);
+        await bot.sendMessage(chatId, "❌ Error checking expired keys.");
+    }
+});
+
+bot.onText(/\/expiredkeysnotify/, async (msg) => {
+    const chatId = msg.chat.id;
+    const senderId = msg.from.id;
+
+    try {
+ 	// 1) Check sender is active admin using COUNT
+        const [countRows] = await db.execute(
+            `SELECT COUNT(AdminID) AS cnt
+             FROM Admins
+             WHERE UserID = ?
+               AND Role IN ('admin', 'superadmin')
+               AND IsActive = 1`,
+            [senderId]
+        );
+
+        if (countRows[0].cnt === 0) {
+            await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
+            return;
+        }
+
+	const [rows] = await db.execute(`
+            SELECT UserID, GuiKey, ServerName
+            FROM UserKeys
+            WHERE DATE(ExpiredAt) = CURDATE();
+        `);
+
+        //console.log('✅Raw rows from database: "expiredkeysnotify"', rows); // Debugging
+
+        if (rows.length === 0) {
+            await bot.sendMessage(chatId, '✅ No expired keys found.');
+            return;
+        }
+
+        let reply = '🔑 *Expired Keys Still Active on Servers:*\n\n';
+        let foundActiveKeys = false;
+
+        for (const row of rows) {
+            //console.log('Processing row:', row); // Debugging
+            
+            const { UserID, GuiKey, ServerName } = row;
+            
+            if (!UserID || !GuiKey) {
+                console.warn(`Skipping row with missing data:`, row);
+                continue;
+            }
+            
+            const exists = await KeyExists(ServerName, GuiKey);
+
+            if (exists) {
+                foundActiveKeys = true;
+                reply += `👤 UserID: \`${UserID}\`\n🗝️ Key: \`${GuiKey}\`\n🌐 Server: ${ServerName}\n\n`;
+
+	    	try {
+    			await bot.sendMessage(UserID, `Hello👋\nYour key \`${GuiKey}\` is expired. Please contact the admin to renew it.`);
+    			//console.log(`Expiration notice sent to UserID: ${UserID}`);
+    			await bot.sendMessage(chatId, `✅ Expiration notice for \`${GuiKey}\` has been sent to \`${UserID}\``);
+			//await bot.sendMessage(chatId, `✅ Expiration notice for \`${GuiKey}\` has been sent to \`${UserID}\``, {parse_mode: 'MarkdownV2'});
+//await bot.sendMessage(chatId, `✅ Expiration notice for \`${GuiKey}\` has been sent to \`${UserID}\``, {parse_mode: 'MarkdownV2'});
+		} catch (error) {
+   	 		//console.error(`Failed to send expiration notice to UserID: ${UserID}`, error);
+    			await bot.sendMessage(chatId, `❌ Failed to send message for \`${GuiKey}\` to \`${UserID}\`. Error: ${error.message}`);
+    			//await bot.sendMessage(chatId, `❌ Failed to send message for \`${GuiKey}\` to \`${UserID}\`. Error: ${error.message}`, {parse_mode: 'MarkdownV2'});
+		
+// Optionally log this failure to a database or file
+		}
+	    }
+        }
+
+        if (!foundActiveKeys) {
+            reply = '✅ No expired keys still active on servers.';
+        }
+        
+        await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+    } catch (err) {
+        console.error(err);
+        await bot.sendMessage(chatId, '❌ Error fetching expired keys.');
+    }
+});
+
+
+
 // Hidden Commands (Admin Only)
 bot.onText(/\/(hc|HiddenCommands)/, async (msg) => {
     const chatId = msg.chat.id;
@@ -898,12 +1055,15 @@ bot.onText(/\/(hc|HiddenCommands)/, async (msg) => {
         const commandKeyboard = {
             reply_markup: {
                 keyboard: [
+		    ["/expiredkeys"],
+		    ["/expiredkeysnotify"],
 		    ["/useridADDbalance"],
                     ["/usernameADDbalance"],
 		    ["/userbalanceuserID"],
                     ["/userbalance"],
                     ["/sendMessage"],
-                    ["/keyusername"]
+                    ["/keyusername"],
+		    ["/keyuserid"]
                 ],
                 resize_keyboard: true,   // compact keyboard
                 one_time_keyboard: true  // auto-hide after use
