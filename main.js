@@ -1,4 +1,5 @@
 //main
+const axios = require('axios'); //removekey command
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const insertUser = require('./db/insertUser');
@@ -23,15 +24,16 @@ const fs = require('fs');
 //const getNowPaymentsInvoiceStatus = require("../getNowPaymentsInvoiceStatus");
 const getNowPaymentsInvoiceStatus = require('./getNowPaymentsInvoiceStatus');
 const KeyExists = require('./db/keyExists');
-//const KeyExists = require('./utils/keyExists');  // ✅ correct
+const SERVERS = require('./servers'); //removekey command
+const https = require('https'); //removekey command
 
 let callbackToServer = {};
 let callbackToInternationalServer = {};
 
 
 
-const token = ''; //RoyalVPN
-//const token = ''; //Test
+//const token = ''; //RoyalVPN
+const token = ''; //Test
 //const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
 //const NOWPAYMENTS_API_KEY = '';
@@ -133,7 +135,7 @@ const subMenus = {
                 [
                     //{ text: 'Italy 🇮🇹', callback_data: 'speed_it' },
                     //{ text: 'Turkey', callback_data: 'speed_tur' }
-                    { text: 'Armenia 🇦🇲', callback_data: 'speed_arm' },
+                    { text: 'India 🇮🇳', callback_data: 'speed_in' },
 		    { text: 'UAE 🇦🇪' , callback_data: 'speed_uae' }
 		],
                 [
@@ -1024,6 +1026,131 @@ bot.onText(/\/expiredkeysnotify/, async (msg) => {
         console.error(err);
         await bot.sendMessage(chatId, '❌ Error fetching expired keys.');
     }
+});
+
+
+bot.onText(/\/removekey\s+([\s\S]+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const senderId = msg.from.id;
+  const input = match[1].trim();
+
+  try {
+    // --- 1) admin check ---
+    const [adminRows] = await db.execute(
+      "SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 AND Role IN ('admin','superadmin') LIMIT 1",
+      [senderId]
+    );
+    if (!adminRows || adminRows.length === 0) {
+      await bot.sendMessage(chatId, "❌ Error: You are not an active admin.");
+      return;
+    }
+
+    // --- 2) find key in DB ---
+    const altGui = input.startsWith('#') ? input.substring(1).trim() : ('#' + input);
+
+    // try GuiKey first
+    let [rows] = await db.execute(
+      "SELECT FullKey, GuiKey, ServerName FROM UserKeys WHERE GuiKey = ? OR GuiKey = ? LIMIT 1",
+      [input, altGui]
+    );
+
+    // if not found, try FullKey
+    if (!rows || rows.length === 0) {
+      [rows] = await db.execute(
+        "SELECT FullKey, GuiKey, ServerName FROM UserKeys WHERE FullKey = ? LIMIT 1",
+        [input]
+      );
+    }
+
+    if (!rows || rows.length === 0) {
+      await bot.sendMessage(chatId, `❌ No key found with GuiKey or FullKey: ${input}`);
+      return;
+    }
+
+    const row = rows[0];
+    const storedGuiKey = row.GuiKey;
+    const fullKey = row.FullKey;
+    const serverName = row.ServerName;
+
+    // --- 3) get server config ---
+    const server = SERVERS[serverName];
+    if (!server) {
+      await bot.sendMessage(chatId, `❌ Server config not found for: ${serverName}`);
+      return;
+    }
+
+    // --- 4) base URL ---
+    let baseUrl = server.apiUrl || server.baseUrl || server.api;
+    if (!baseUrl.endsWith('/')) baseUrl += '/';
+    const listUrl = `${baseUrl}${server.apiKey}/access-keys`;
+    const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+
+    // --- 5) fetch access keys from server ---
+    let accessKeys = [];
+    try {
+      const resp = await axios.get(listUrl, { httpsAgent, timeout: 15000 });
+      accessKeys = resp.data && resp.data.accessKeys
+        ? resp.data.accessKeys
+        : (Array.isArray(resp.data) ? resp.data : []);
+    } catch (err) {
+      const errMsg = err.response ? `HTTP ${err.response.status} ${err.response.statusText}` : err.message;
+      await bot.sendMessage(chatId, `❌ Failed to fetch key list from server: ${errMsg}`);
+      return;
+    }
+
+    // normalize
+    const nameToFind = storedGuiKey.startsWith('#') ? storedGuiKey.substring(1).trim() : storedGuiKey.trim();
+    const matchKey = accessKeys.find(k => {
+      if (!k || typeof k.name !== 'string') return false;
+      const n = k.name.trim();
+      return n === nameToFind || n === storedGuiKey.trim() || n === ('#' + nameToFind);
+    });
+
+    if (!matchKey) {
+      // Key not found on server — remove from DB only
+      const altStored = storedGuiKey.startsWith('#') ? storedGuiKey.substring(1).trim() : ('#' + storedGuiKey);
+      await db.execute("DELETE FROM UserKeys WHERE GuiKey = ? OR GuiKey = ? OR FullKey = ? LIMIT 1",
+        [storedGuiKey, altStored, fullKey]);
+      await bot.sendMessage(chatId, `⚠️ Key "${storedGuiKey}" not found on server ${serverName}. Removed from DB only.`);
+      return;
+    }
+
+    // get id for deletion
+    const keyId = matchKey.id || matchKey.keyId || matchKey.accessKeyId;
+    if (!keyId) {
+      await bot.sendMessage(chatId, `❌ Found key on server but couldn't determine its id.`);
+      return;
+    }
+
+    // --- 6) DELETE on server ---
+    const delUrl = `${baseUrl}${server.apiKey}/access-keys/${encodeURIComponent(keyId)}`;
+    try {
+      await axios.delete(delUrl, { httpsAgent, timeout: 15000 });
+    } catch (err) {
+      const errMsg = err.response ? `HTTP ${err.response.status} ${err.response.statusText}` : err.message;
+      if (err.response && err.response.status === 404) {
+        // already gone, still remove from DB
+        const altStored = storedGuiKey.startsWith('#') ? storedGuiKey.substring(1).trim() : ('#' + storedGuiKey);
+        await db.execute("DELETE FROM UserKeys WHERE GuiKey = ? OR GuiKey = ? OR FullKey = ? LIMIT 1",
+          [storedGuiKey, altStored, fullKey]);
+        await bot.sendMessage(chatId, `⚠️ Server 404 (already gone). Removed "${storedGuiKey}" from DB.`);
+        return;
+      }
+      await bot.sendMessage(chatId, `❌ Failed to remove key on server: ${errMsg}`);
+      return;
+    }
+
+    // --- 7) remove from DB ---
+    const altStored = storedGuiKey.startsWith('#') ? storedGuiKey.substring(1).trim() : ('#' + storedGuiKey);
+    await db.execute("DELETE FROM UserKeys WHERE GuiKey = ? OR GuiKey = ? OR FullKey = ? LIMIT 1",
+      [storedGuiKey, altStored, fullKey]);
+
+    await bot.sendMessage(chatId, `✅ Key "${storedGuiKey}" removed from server ${serverName} and DB.`);
+
+  } catch (error) {
+    console.error("/removekey error:", error);
+    await bot.sendMessage(chatId, `❌ Unexpected error: ${error.message}`);
+  }
 });
 
 
