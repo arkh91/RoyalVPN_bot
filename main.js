@@ -355,15 +355,6 @@ bot.onText(/\/balance/, async (msg) => {
   }
 });
 
-
-
-bot.onText(/\/KeyStatus/, (msg) => {
-    const chatId = msg.chat.id;
-    bot.sendMessage(chatId, '� Please send me your key now:');
-    waitingForKey.add(chatId);
-});
-
-
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text?.trim();
@@ -399,6 +390,112 @@ bot.on('message', async (msg) => {
 
 
 // 🌐 Mapping for Internatinal Accounts
+/*
+bot.onText(/\/ks/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  try {
+    // Fetch keys from the last 45 days
+    const [rows] = await db.execute(
+      `SELECT FullKey, GuiKey, ServerName, IssuedAt 
+       FROM UserKeys 
+       WHERE UserID = ? 
+         AND IssuedAt >= NOW() - INTERVAL 45 DAY
+       ORDER BY IssuedAt DESC`,
+      [userId]
+    );
+
+    if (rows.length === 0) {
+      return bot.sendMessage(chatId, "❌ No keys found in the last 45 days.");
+    }
+
+    let message = `🔑 Keys for UserID: \`${userId}\` — ${rows.length} total:\n\n`;
+
+    let count = 1;
+    for (const row of rows) {
+      const { FullKey, GuiKey, ServerName, IssuedAt } = row;
+
+      // Check key status
+      const exists = await KeyExists(ServerName, GuiKey);
+      const statusText = exists ? "**Active**" : "**Not Active**";
+
+      // Format date
+      const issued = new Date(IssuedAt).toDateString().slice(0, 10);
+
+      message += `${count}. FullKey: \`${FullKey}\`\n`;
+      message += `   IssuedAt: ${issued}\n`;
+      message += `   Status: ${statusText}\n\n`;
+
+      count++;
+    }
+
+    await bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
+  } catch (err) {
+    console.error("Error fetching keys:", err);
+    await bot.sendMessage(chatId, "⚠️ Error fetching your keys. Please try again later.");
+  }
+});
+*/
+bot.onText(/\/ks/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  try {
+    // Fetch keys from the last 45 days
+    const [rows] = await db.execute(
+      `SELECT FullKey, GuiKey, ServerName, IssuedAt 
+       FROM UserKeys 
+       WHERE UserID = ? 
+         AND IssuedAt >= NOW() - INTERVAL 45 DAY
+       ORDER BY IssuedAt DESC`,
+      [userId]
+    );
+
+    if (rows.length === 0) {
+      return bot.sendMessage(chatId, "❌ No keys found in the last 45 days.");
+    }
+
+    const escapeHTML = (text) =>
+      text.replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+
+    let message = `🔑 Keys for UserID: <code>${escapeHTML(String(userId))}</code> — ${rows.length} total:\n\n`;
+    let messages = [];
+    let count = 1;
+
+    for (const row of rows) {
+      const { FullKey, GuiKey, ServerName, IssuedAt } = row;
+      const exists = await KeyExists(ServerName, GuiKey);
+      const statusText = exists ? "<b>Active</b>" : "<b>Not Active</b>";
+      const issued = new Date(IssuedAt).toDateString().slice(0, 10);
+
+      const entry =
+        `${count}. FullKey: <code>${escapeHTML(FullKey)}</code>\n` +
+        `   IssuedAt: ${escapeHTML(issued)}\n` +
+        `   Status: ${statusText}\n\n`;
+
+      if (message.length + entry.length > 4000) {
+        messages.push(message);
+        message = "";
+      }
+      message += entry;
+      count++;
+    }
+
+    if (message.length > 0) messages.push(message);
+
+    for (const part of messages) {
+      await bot.sendMessage(chatId, part, { parse_mode: "HTML" });
+    }
+  } catch (err) {
+    console.error("Error fetching keys:", err);
+    await bot.sendMessage(chatId, "⚠️ Error fetching your keys. Please try again later.");
+  }
+});
+
+
 
 bot.onText(/^\/userbalance (.+)$/, async (msg, match) => {
     const chatId = msg.chat.id;
@@ -1190,7 +1287,8 @@ bot.onText(/\/(hc|HiddenCommands)/, async (msg) => {
                     ["/userbalance"],
                     ["/sendMessage"],
                     ["/keyusername"],
-		    ["/keyuserid"]
+		    ["/keyuserid"],
+		    ["/removekey"]
                 ],
                 resize_keyboard: true,   // compact keyboard
                 one_time_keyboard: true  // auto-hide after use
