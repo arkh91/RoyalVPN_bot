@@ -32,11 +32,11 @@ let callbackToInternationalServer = {};
 
 
 
-const token = ''; //RoyalVPN
-//const token = ''; //Test
+const token = 'hA'; //RoyalVPN
+//const token = 'A'; //Test
 //const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
-//const NOWPAYMENTS_API_KEY = '';
+//const NOWPAYMENTS_API_KEY = '4PPCTPB-385MXPM-N5DBCGX-KV64DPY';
 
 const createNowPaymentsSession = require('./createNowPaymentsSession');
 
@@ -160,13 +160,13 @@ const subMenus = {
                   [{ text: '300 GB / 5.60 USD', callback_data: 'wg_bw_300' }],
                   //[{ text: '500 GB / 9.30 USD', callback_data: 'bw_500' }],
                   [{ text: '1000 GB / 16.99 USD', callback_data: 'wg_bw_1000' }],
-                  { text: '⬅️ Go Back', callback_data: 'sub_wg_number_user' }
+                  [{ text: '⬅️ Go Back', callback_data: 'sub_wg_number_user' }]
              ]
          }
       },
 
     sub_1_game: {
-        text: '� Choose a game-optimized server for smoother, faster gameplay:',
+        text: '  Choose a game-optimized server for smoother, faster gameplay:',
         reply_markup: {
             inline_keyboard: [
                 [{ text: 'Arena Breakout', callback_data: 'game_arena' }],
@@ -1590,29 +1590,6 @@ bot.on('callback_query', async (query) => {
                 1000: 16.99
         };
 
-        if (data.startsWith('wg_bw_') || data.startsWith('int_wg_bw_')) {
-
-           const isInternational = data.startsWith('int_wg_bw_');
-
-           console.log(`⚡ BW Selection: data=${data}, isInternational=${isInternational}`);
-
-           const bandwidthGb = parseInt(
-                data.replace(isInternational ? 'int_wg_bw_' : 'wg_bw_', ''),
-                10
-           );
-
-                const bandwidthPrices = {
-                        40: 1.10,
-                        50: 1.29,
-                        70: 1.95,
-                        100: 2.33,
-                        300: 5.60,
-                        500: 9.30,
-                        1000: 16.99
-                };
-
-                console.log(`Bandwidth selected: ${bandwidthGb} GB`);
-        }
         const requiredAmount = bandwidthPrices[bandwidthGb];
         const session = bot.session?.[userId];
 
@@ -1732,6 +1709,65 @@ bot.on('callback_query', async (query) => {
 
                 return;
         }
+
+
+    if (data.startsWith('wg_speed_')) {
+
+        bot.session ??= {};
+        bot.session[userId] ??= {};
+
+        bot.session[userId].vpnType = 'wireguard';
+        bot.session[userId].country =
+        data.replace('wg_speed_', '');
+
+        return bot.editMessageText(
+                subMenus.sub_wg_number_user.text,
+                {
+                chat_id: chatId,
+                message_id: messageId,
+                reply_markup: subMenus.sub_wg_number_user.reply_markup
+                }
+        );
+    }
+
+    if (data.startsWith('wg_number_')) {
+
+        const devicesMap = {
+                wg_number_one_devices: 1,
+                wg_number_two_devices: 2,
+                wg_number_three_devices: 3
+        };
+
+        bot.session[userId].devices =
+                devicesMap[data];
+
+        return bot.editMessageText(
+                subMenus.sub_wgvpn_traffic.text,
+                {
+                chat_id: chatId,
+                message_id: messageId,
+                reply_markup: subMenus.sub_wgvpn_traffic.reply_markup
+                }
+        );
+    }
+
+    if (data.startsWith('wg_bw_')) {
+
+        const bandwidth =
+                parseInt(data.replace('wg_bw_', ''), 10);
+
+        const session = bot.session[userId];
+
+        console.log(
+                session.country,
+                session.devices,
+                bandwidth
+        );
+
+    // check balance
+    // create WG peer(s)
+    // deduct balance
+    }
 
     // NOWPAYMENT → DOGECOIN SUBMENUS
     if (data === 'pay_nowpayment') {
@@ -1907,7 +1943,7 @@ if (data.startsWith('ton_pay_')) {
                 const orderId = result.orderId;
                 const paymentId = result.paymentId;
                 const invoiceId = result.invoiceid;
-                console.log('� Using NowPayments OrderID:', orderId);
+                console.log('  Using NowPayments OrderID:', orderId);
 
                 const sql = `
                         INSERT INTO payments (
