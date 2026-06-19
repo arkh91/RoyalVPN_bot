@@ -36,7 +36,7 @@ const token = ''; //RoyalVPN
 //const token = ''; //Test
 //const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
-//const NOWPAYMENTS_API_KEY = '4PPCTPB-385MXPM-N5DBCGX-KV64DPY';
+//const NOWPAYMENTS_API_KEY = '';
 
 const createNowPaymentsSession = require('./createNowPaymentsSession');
 
@@ -93,11 +93,78 @@ const subMenus = {
         reply_markup: {
             inline_keyboard: [
                 [{ text: 'Game', callback_data: 'sub_1_game' }],
-                [{ text: 'High Speed', callback_data: 'sub_1_speed' }],
+                [{ text: 'High Speed', callback_data: 'sub_Outline_VS_WireGuard' }],
                 [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
             ]
         }
     },
+    sub_Outline_VS_WireGuard: {
+        text: 'Please choose the VPN system:',
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: 'Outline', callback_data: 'sub_1_speed' }],
+                [{ text: 'WireGuard', callback_data: 'sub_wgvpn' }],
+                [{ text: '⬅️ Go Back', callback_data: 'menu_1' }]
+            ]
+        }
+    },
+    sub_wgvpn: {
+        text: '⚡ Choose a high-speed location for fast and secure internet with WireGuard:',
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    { text: 'Germany 🇩🇪', callback_data: 'wg_speed_ger' },
+                    { text: 'Sweden 🇸🇪', callback_data: 'wg_speed_sweden' }
+                ],
+                [
+                    { text: 'Finland 🇫🇮 ', callback_data: 'wg_speed_fin' },
+                    //{ text: 'Iran 🇮🇷', callback_data: 'speed_ir' }
+                    { text: 'Italy 🇮🇹 ', callback_data: 'wg_speed_it' }
+                ],
+                [
+                    { text: 'Nigeria 🇳🇬 ', callback_data: 'wg_speed_nig' },
+                    { text: 'Turkey 🇹🇷 ', callback_data: 'wg_speed_tur' }
+                ],
+                [
+                    { text: 'India 🇮🇳', callback_data: 'wg_speed_in' },
+                    { text: 'Egypt 🇪🇬 ' , callback_data: 'wg_speed_eg' }
+                ],
+                [
+                    { text: 'UK 🇬🇧 ', callback_data: 'wg_speed_uk' },
+                    { text: 'USA 🇺🇸', callback_data: 'wg_speed_usa' }
+                ],
+                [{ text: '⬅️ Go Back', callback_data: 'sub_Outline_VS_WireGuard' }]
+            ]
+        }
+    },
+    sub_wg_number_user: {
+        text: 'Please choose the number of devices: ',
+        reply_markup: {
+           inline_keyboard: [
+                [{ text: '1 device', callback_data: 'wg_number_one_devices' }],
+                [{ text: '2 devices', callback_data: 'wg_number_two_devices' }],
+                [{ text: '3 devices', callback_data: 'wg_number_three_devices' }],
+                [{ text: '⬅️ Go Back', callback_data: 'sub_wgvpn' }]
+           ]
+        }
+    },
+
+    sub_wgvpn_traffic: {
+        text: 'Select your 30-day WireGuard traffic package:',
+            reply_markup: {
+              inline_keyboard: [
+                  [{ text: '40 GB / 1.10 USD', callback_data: 'wg_bw_40' }],
+                  [{ text: '50 GB / 1.29 USD', callback_data: 'wg_bw_50' }],
+                  [{ text: '70 GB / 1.95 USD', callback_data: 'wg_bw_70' }],
+                  [{ text: '100 GB / 2.33 USD', callback_data: 'wg_bw_100' }],
+                  [{ text: '300 GB / 5.60 USD', callback_data: 'wg_bw_300' }],
+                  //[{ text: '500 GB / 9.30 USD', callback_data: 'bw_500' }],
+                  [{ text: '1000 GB / 16.99 USD', callback_data: 'wg_bw_1000' }],
+                  { text: '⬅️ Go Back', callback_data: 'sub_wg_number_user' }
+             ]
+         }
+      },
+
     sub_1_game: {
         text: '� Choose a game-optimized server for smoother, faster gameplay:',
         reply_markup: {
@@ -1523,6 +1590,29 @@ bot.on('callback_query', async (query) => {
                 1000: 16.99
         };
 
+        if (data.startsWith('wg_bw_') || data.startsWith('int_wg_bw_')) {
+
+           const isInternational = data.startsWith('int_wg_bw_');
+
+           console.log(`⚡ BW Selection: data=${data}, isInternational=${isInternational}`);
+
+           const bandwidthGb = parseInt(
+                data.replace(isInternational ? 'int_wg_bw_' : 'wg_bw_', ''),
+                10
+           );
+
+                const bandwidthPrices = {
+                        40: 1.10,
+                        50: 1.29,
+                        70: 1.95,
+                        100: 2.33,
+                        300: 5.60,
+                        500: 9.30,
+                        1000: 16.99
+                };
+
+                console.log(`Bandwidth selected: ${bandwidthGb} GB`);
+        }
         const requiredAmount = bandwidthPrices[bandwidthGb];
         const session = bot.session?.[userId];
 
