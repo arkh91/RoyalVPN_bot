@@ -48,7 +48,9 @@ CREATE TABLE UserKeys (
 CREATE TABLE vpn_servers (
     ServerID INT AUTO_INCREMENT PRIMARY KEY,
 
-    ServerName VARCHAR(50) NOT NULL,     -- IR-Tehran-1, UK-London-1
+    ServerName VARCHAR(50) NOT NULL,     -- Internal unique name: IR-Tehran-1
+    ServerAlias VARCHAR(100) DEFAULT NULL, -- User-facing name: Tehran Premium
+
     Country VARCHAR(50) NOT NULL,
     City VARCHAR(50) NOT NULL,
 
@@ -56,7 +58,7 @@ CREATE TABLE vpn_servers (
     PublicURLInternational VARCHAR(255) NOT NULL,
     PublicURLIran VARCHAR(255) NOT NULL,
 
-    -- Network ports (separated clearly)
+    -- Network ports
     WireGuardPort INT DEFAULT 51820,
     OutlinePort INT DEFAULT NULL,
 
@@ -81,7 +83,7 @@ CREATE TABLE vpn_servers (
     INDEX idx_country (Country),
     INDEX idx_city (City),
     INDEX idx_status (Status),
-    INDEX idx_status_country (Status, Country)
+    INDEX idx_status_country (Status, Country),
+    INDEX idx_alias (ServerAlias)
 );
-
 
