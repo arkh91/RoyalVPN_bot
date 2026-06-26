@@ -6,6 +6,7 @@ const insertUser = require('./db/insertUser');
 const insertVisit = require('./db/insertVisit');
 const { createNewKey } = require('./db/KeyCreation');
 const { createInternationalKey } = require('./db/KeyCreationInternational');
+const { createWireGuardKeys } = require('./db/WGKeyCreation');
 const checkBalance = require('./checkBalance');
 const { getKeyStatusResponseMessage } = require('./KeyStatus');
 const checkEligible = require ('./checkEligibility');
@@ -34,7 +35,7 @@ let callbackToInternationalServer = {};
 
 
 const token = ''; //RoyalVPN
-//const token = 'A'; //Test
+//const token = ''; //Test
 //const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
 //const NOWPAYMENTS_API_KEY = '4PPCTPB-385MXPM-N5DBCGX-KV64DPY';
@@ -64,6 +65,50 @@ fs.watchFile('./callbacks.json', { interval: 2000 }, () => {
         console.error('❌ Failed to reload callbacks.json:', err);
     }
 });
+
+// Hard-coded per your instruction — mirrors the Outline callbackToServer pattern,
+// but static instead of config-file-driven since alias choice (Ger27 vs Ger28, etc.)
+// is a deliberate ops decision, not something to load-balance automatically.
+const WG_COUNTRY_TO_ALIAS = {
+    ger: 'Ger27',
+    // sweden: 'XXX',  // TODO: fill in
+    // fin: 'XXX',
+    // it: 'XXX',
+    // nig: 'XXX',
+    // tur: 'XXX',
+    // in: 'XXX',
+    // eg: 'XXX',
+    // uk: 'XXX',
+     usa: 'US08',
+};
+
+const WG_BASE_BANDWIDTH_PRICES = {
+    40: 1.10,
+    50: 1.29,
+    70: 1.95,
+    100: 2.33,
+    300: 5.60,
+    1000: 16.99
+};
+
+// Total price = base (1 device) + $1.00 for each additional device.
+function getWgPrice(bandwidthGb, deviceCount) {
+    const base = WG_BASE_BANDWIDTH_PRICES[bandwidthGb];
+    return base + (deviceCount - 1) * 1.00;
+}
+
+function buildWgTrafficMenu(deviceCount) {
+    const buttons = Object.keys(WG_BASE_BANDWIDTH_PRICES).map(gb => {
+        const total = getWgPrice(Number(gb), deviceCount);
+        return [{ text: `${gb} GB / ${total.toFixed(2)} USD`, callback_data: `wg_bw_${gb}` }];
+    });
+    buttons.push([{ text: '⬅️ Go Back', callback_data: 'sub_wg_number_user' }]);
+
+    return {
+        text: `Select your 30-day WireGuard traffic package (${deviceCount} device${deviceCount > 1 ? 's' : ''}):`,
+        reply_markup: { inline_keyboard: buttons }
+    };
+}
 
 const waitingForKey = new Set();
 
@@ -143,8 +188,8 @@ const subMenus = {
         reply_markup: {
            inline_keyboard: [
                 [{ text: '1 device', callback_data: 'wg_number_one_devices' }],
-                [{ text: '2 devices', callback_data: 'wg_number_two_devices' }],
-                [{ text: '3 devices', callback_data: 'wg_number_three_devices' }],
+                [{ text: '2 devices + $1', callback_data: 'wg_number_two_devices' }],
+                [{ text: '3 devices + $2', callback_data: 'wg_number_three_devices' }],
                 [{ text: '⬅️ Go Back', callback_data: 'sub_wgvpn' }]
            ]
         }
@@ -565,6 +610,10 @@ bot.on('callback_query', async (query) => {
         bot.session[userId].vpnType = 'wireguard';
         bot.session[userId].country =
         data.replace('wg_speed_', '');
+	// TEMPORARY: PublicURLIran isn't set up for WireGuard yet — always use
+	// PublicURLInternational for now. Switch this back to menu-based logic
+	// once PublicURLIran is properly configured for WG servers.
+	bot.session[userId].isInternational = true;
 
         return bot.editMessageText(
                 subMenus.sub_wg_number_user.text,
@@ -584,35 +633,89 @@ bot.on('callback_query', async (query) => {
                 wg_number_three_devices: 3
         };
 
-        bot.session[userId].devices =
-                devicesMap[data];
+        bot.session[userId].devices = devicesMap[data];
 
-        return bot.editMessageText(
-                subMenus.sub_wgvpn_traffic.text,
-                {
+        const trafficMenu = buildWgTrafficMenu(bot.session[userId].devices);
+
+        return bot.editMessageText(trafficMenu.text, {
                 chat_id: chatId,
                 message_id: messageId,
-                reply_markup: subMenus.sub_wgvpn_traffic.reply_markup
-                }
-        );
+                reply_markup: trafficMenu.reply_markup
+        });
     }
 
     if (data.startsWith('wg_bw_')) {
 
-        const bandwidth =
-                parseInt(data.replace('wg_bw_', ''), 10);
+        const bandwidthGb = parseInt(data.replace('wg_bw_', ''), 10);
+        const session = bot.session?.[userId];
 
-        const session = bot.session[userId];
+        if (!session || !session.country || !session.devices) {
+                await bot.sendMessage(chatId, '❌ Error: Missing selection. Please start again.');
+                return;
+        }
 
-        console.log(
-                session.country,
-                session.devices,
-                bandwidth
-        );
+        if (session.inProgress) {
+                await bot.sendMessage(chatId, '⏳ Your request is already being processed. Please wait...');
+                return;
+        }
+        session.inProgress = true;
 
-    // check balance
-    // create WG peer(s)
-    // deduct balance
+        const requiredAmount = getWgPrice(bandwidthGb, session.devices);
+
+        const serverAlias = WG_COUNTRY_TO_ALIAS[session.country];
+        if (!serverAlias) {
+            await bot.sendMessage(chatId, `❌ Error: No server alias configured for "${session.country}" yet.`);
+            delete bot.session[userId];
+            return;
+        }
+
+        try {
+            const eligible = await checkEligible(userId, chatId, bot);
+            const balanceValue = await getUserBalance(userId);
+
+            console.log(`WG | User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Required: $${requiredAmount}`);
+
+            if (!eligible && balanceValue < requiredAmount) {
+                await bot.sendMessage(
+                    chatId,
+                    `❌ You need at least $${requiredAmount.toFixed(2)} to buy ${bandwidthGb} GB on ${session.devices} device(s).\nYour current balance: $${balanceValue.toFixed(2)}.\n\nUse /payment to top up.`
+                );
+                return;
+            }
+
+            if (eligible) {
+                await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
+            }
+
+            const peers = await createWireGuardKeys({
+                serverAlias,
+                userId,
+                deviceCount: session.devices,
+                bandwidthGb,
+                isInternational: session.isInternational
+            });
+
+            for (const peer of peers) {
+                await bot.sendMessage(
+                    chatId,
+                    `✅ Device ${peer.deviceSeq}/${peers.length} — your WireGuard config:\n\`\`\`\n${peer.config}\n\`\`\``,
+                    { parse_mode: 'Markdown' }
+                );
+            }
+
+            if (!eligible) {
+                await deductBalance(userId, requiredAmount);
+                await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
+            }
+
+        } catch (err) {
+            console.error('❌ Error in WireGuard purchase:', err);
+            await bot.sendMessage(chatId, `❌ Failed to create WireGuard key(s): ${err.message}`);
+        } finally {
+            delete bot.session[userId];
+        }
+
+        return;
     }
 
     // NOWPAYMENT → DOGECOIN SUBMENUS
