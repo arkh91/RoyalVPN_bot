@@ -14,6 +14,7 @@ const getUserBalance = require('./db/getUserBalance'); // adjust path as needed
 const deductBalance = require('./db/deductBalance');   // same here
 //const { checkBalance, updatePendingPayments } = require('./payments');
 //const { updatePendingPayments } = require('./payments');
+const { createWireGuardKeys } = require('./db/WGKeyCreation');
 const db = require('./db');
 const mysql = require('mysql');
 console.log("✅ MySQL module loaded successfully");
@@ -32,11 +33,11 @@ let callbackToInternationalServer = {};
 
 
 
-const token = 'hA'; //RoyalVPN
-//const token = 'A'; //Test
+const token = 'A'; //RoyalVPN
+//const token = ''; //Test
 //const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
-//const NOWPAYMENTS_API_KEY = '4PPCTPB-385MXPM-N5DBCGX-KV64DPY';
+//const NOWPAYMENTS_API_KEY = '';
 
 const createNowPaymentsSession = require('./createNowPaymentsSession');
 
@@ -63,6 +64,22 @@ fs.watchFile('./callbacks.json', { interval: 2000 }, () => {
         console.error('❌ Failed to reload callbacks.json:', err);
     }
 });
+
+// Hard-coded per your instruction — mirrors the Outline callbackToServer pattern,
+// but static instead of config-file-driven since alias choice (Ger27 vs Ger28, etc.)
+// is a deliberate ops decision, not something to load-balance automatically.
+const WG_COUNTRY_TO_ALIAS = {
+    ger: 'Ger27',
+    // sweden: 'XXX',  // TODO: fill in
+    // fin: 'XXX',
+    // it: 'XXX',
+    // nig: 'XXX',
+    // tur: 'XXX',
+    // in: 'XXX',
+    // eg: 'XXX',
+    // uk: 'XXX',
+     usa: 'US08',
+};
 
 const waitingForKey = new Set();
 
@@ -99,14 +116,14 @@ const subMenus = {
         }
     },
     sub_Outline_VS_WireGuard: {
-        text: 'Please choose the VPN system:',
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: 'Outline', callback_data: 'sub_1_speed' }],
-                [{ text: 'WireGuard', callback_data: 'sub_wgvpn' }],
-                [{ text: '⬅️ Go Back', callback_data: 'menu_1' }]
-            ]
-        }
+	text: 'Please choose the VPN system:',
+	reply_markup: {
+	    inline_keyboard: [
+		[{ text: 'Outline', callback_data: 'sub_1_speed' }],
+		[{ text: 'WireGuard', callback_data: 'sub_wgvpn' }],
+		[{ text: '⬅️ Go Back', callback_data: 'menu_1' }]
+	    ]
+	}
     },
     sub_wgvpn: {
         text: '⚡ Choose a high-speed location for fast and secure internet with WireGuard:',
@@ -138,19 +155,19 @@ const subMenus = {
         }
     },
     sub_wg_number_user: {
-        text: 'Please choose the number of devices: ',
-        reply_markup: {
-           inline_keyboard: [
-                [{ text: '1 device', callback_data: 'wg_number_one_devices' }],
-                [{ text: '2 devices', callback_data: 'wg_number_two_devices' }],
-                [{ text: '3 devices', callback_data: 'wg_number_three_devices' }],
-                [{ text: '⬅️ Go Back', callback_data: 'sub_wgvpn' }]
-           ]
-        }
+	text: 'Please choose the number of devices: ',
+	reply_markup: {
+	   inline_keyboard: [
+    		[{ text: '1 device', callback_data: 'wg_number_one_devices' }],
+    		[{ text: '2 devices', callback_data: 'wg_number_two_devices' }],
+    		[{ text: '3 devices', callback_data: 'wg_number_three_devices' }],
+    		[{ text: '⬅️ Go Back', callback_data: 'sub_wgvpn' }]
+	   ]
+	}
     },
 
     sub_wgvpn_traffic: {
-        text: 'Select your 30-day WireGuard traffic package:',
+	text: 'Select your 30-day WireGuard traffic package:',
             reply_markup: {
               inline_keyboard: [
                   [{ text: '40 GB / 1.10 USD', callback_data: 'wg_bw_40' }],
@@ -164,7 +181,7 @@ const subMenus = {
              ]
          }
       },
-
+	
     sub_1_game: {
         text: '  Choose a game-optimized server for smoother, faster gameplay:',
         reply_markup: {
@@ -179,13 +196,13 @@ const subMenus = {
     game_arena: {
         text: '🎮 Arena Breakout – Select your package:',
         reply_markup: {
-                inline_keyboard: [
-                        [{ text: '25 GB – $0.99', callback_data: 'arena_25gb' }],
-                        [{ text: '50 GB – $1.89', callback_data: 'arena_50gb' }],
-                        [{ text: '⬅️ Go Back', callback_data: 'sub_1_game' }]
-                ]
-        }
-    },
+		inline_keyboard: [
+                	[{ text: '25 GB – $0.99', callback_data: 'arena_25gb' }],
+                	[{ text: '50 GB – $1.89', callback_data: 'arena_50gb' }],
+            		[{ text: '⬅️ Go Back', callback_data: 'sub_1_game' }]
+        	]
+	}
+    },	
     sub_1_speed: {
         text: '⚡ Choose a high-speed location for fast and secure internet:',
         reply_markup: {
@@ -197,18 +214,18 @@ const subMenus = {
                 [
                     { text: 'Finland 🇫🇮 ', callback_data: 'speed_fin' },
                     //{ text: 'Iran 🇮🇷', callback_data: 'speed_ir' }
-                    { text: 'Italy 🇮🇹 ', callback_data: 'speed_it' }
+		    { text: 'Italy 🇮🇹 ', callback_data: 'speed_it' }
                 ],
                 [
                     { text: 'Nigeria 🇳🇬 ', callback_data: 'speed_nig' },
                     { text: 'Turkey 🇹🇷 ', callback_data: 'speed_tur' }
                 ],
+		[
+		    { text: 'India 🇮🇳', callback_data: 'speed_in' },
+		    { text: 'Egypt 🇪🇬 ' , callback_data: 'speed_eg' }
+		],
                 [
-                    { text: 'India 🇮🇳', callback_data: 'speed_in' },
-                    { text: 'Egypt 🇪🇬 ' , callback_data: 'speed_eg' }
-                ],
-                [
-                    { text: 'UK 🇬🇧 ', callback_data: 'speed_uk' },
+		    { text: 'UK 🇬🇧 ', callback_data: 'speed_uk' },
                     { text: 'USA 🇺🇸', callback_data: 'speed_usa' }
                 ],
                 [{ text: '⬅️ Go Back', callback_data: 'menu_1' }]
@@ -219,9 +236,9 @@ const subMenus = {
         text: 'Select the 30-day Outline bandwidth limit:',
         reply_markup: {
             inline_keyboard: [
-                [{ text: '40 GB / 1.10 USD', callback_data: 'bw_40' }],
+		[{ text: '40 GB / 1.10 USD', callback_data: 'bw_40' }],
                 [{ text: '50 GB / 1.29 USD', callback_data: 'bw_50' }],
-                [{ text: '70 GB / 1.95 USD', callback_data: 'bw_70' }],
+		[{ text: '70 GB / 1.95 USD', callback_data: 'bw_70' }],
                 [{ text: '100 GB / 2.33 USD', callback_data: 'bw_100' }],
                 [{ text: '300 GB / 5.60 USD', callback_data: 'bw_300' }],
                 //[{ text: '500 GB / 9.30 USD', callback_data: 'bw_500' }],
@@ -273,11 +290,11 @@ const subMenus = {
                 [{ text: '300 GB / 5.60 USD', callback_data: 'int_bw_300' }],
                 [{ text: '500 GB / 9.30 USD', callback_data: 'int_bw_500' }],
                 [{ text: '1000 GB / 16.99 USD', callback_data: 'int_bw_1000' }],
-                [{ text: '⬅️ Go Back', callback_data: 'sub_INT_speed' }]
+		[{ text: '⬅️ Go Back', callback_data: 'sub_INT_speed' }]
             ]
         }
     },
-
+	
 
 };
 /*
@@ -330,8 +347,8 @@ bot.onText(/^\/userid$/, async (msg) => {
     const lastName = msg.from.last_name || '';
 
     const sql = `
-        SELECT CurrentBalance
-        FROM accounts
+        SELECT CurrentBalance 
+        FROM accounts 
         WHERE UserID = ?
         LIMIT 1
     `;
@@ -467,9 +484,9 @@ bot.onText(/\/ks/, async (msg) => {
   try {
     // Fetch keys from the last 45 days
     const [rows] = await db.execute(
-      `SELECT FullKey, GuiKey, ServerName, IssuedAt
-       FROM UserKeys
-       WHERE UserID = ?
+      `SELECT FullKey, GuiKey, ServerName, IssuedAt 
+       FROM UserKeys 
+       WHERE UserID = ? 
          AND IssuedAt >= NOW() - INTERVAL 45 DAY
        ORDER BY IssuedAt DESC`,
       [userId]
@@ -513,9 +530,9 @@ bot.onText(/\/ks/, async (msg) => {
   try {
     // Fetch keys from the last 45 days
     const [rows] = await db.execute(
-      `SELECT FullKey, GuiKey, ServerName, IssuedAt
-       FROM UserKeys
-       WHERE UserID = ?
+      `SELECT FullKey, GuiKey, ServerName, IssuedAt 
+       FROM UserKeys 
+       WHERE UserID = ? 
          AND IssuedAt >= NOW() - INTERVAL 45 DAY
        ORDER BY IssuedAt DESC`,
       [userId]
@@ -576,12 +593,12 @@ bot.onText(/^\/userbalance (.+)$/, async (msg, match) => {
     }
 
     //const username = match[1].trim();
-        // Trim and remove leading @ if present
+	// Trim and remove leading @ if present
     const username = match[1].trim().replace(/^@/, '');
 
     const sql = `
-        SELECT UserID, FirstName, LastName, Username, CurrentBalance
-        FROM accounts
+        SELECT UserID, FirstName, LastName, Username, CurrentBalance 
+        FROM accounts 
         WHERE LOWER(Username) = LOWER(?)
         LIMIT 1
     `;
@@ -596,14 +613,14 @@ bot.onText(/^\/userbalance (.+)$/, async (msg, match) => {
         }
 
         const user = results[0];
-
-        const response =
-        `💳 Balance Info:
-        UserID: ${user.UserID}
-        FirstName: ${user.FirstName || "-"}
-        LastName: ${user.LastName || "-"}
-        Username: ${user.Username ? '@' + user.Username : "-"}
-        CurrentBalance: $${Number(user.CurrentBalance).toFixed(2)}`;
+        
+	const response =
+	`💳 Balance Info:
+	UserID: ${user.UserID}
+	FirstName: ${user.FirstName || "-"}
+	LastName: ${user.LastName || "-"}
+	Username: ${user.Username ? '@' + user.Username : "-"}
+	CurrentBalance: $${Number(user.CurrentBalance).toFixed(2)}`;
 
         bot.sendMessage(chatId, response);
     } catch (err) {
@@ -643,8 +660,8 @@ bot.onText(/^\/userbalanceuserID (\d+)$/, async (msg, match) => {
 
         // 3) Query account
         const sql = `
-            SELECT UserID, FirstName, LastName, Username, CurrentBalance
-            FROM accounts
+            SELECT UserID, FirstName, LastName, Username, CurrentBalance 
+            FROM accounts 
             WHERE UserID = ?
             LIMIT 1
         `;
@@ -679,8 +696,8 @@ bot.onText(/^\/userbalanceuserID (\d+)$/, async (msg, match) => {
 bot.onText(/^\/usernameADDbalance (.+) (.+)$/, async (msg, match) => {
     const chatId = msg.chat.id;
     const senderId = msg.from.id;
-
-        // 1) Check sender is active admin using COUNT
+    
+	// 1) Check sender is active admin using COUNT
         const [countRows] = await db.execute(
             `SELECT COUNT(AdminID) AS cnt
              FROM Admins
@@ -744,8 +761,8 @@ bot.onText(/^\/usernameADDbalance (.+) (.+)$/, async (msg, match) => {
 
         // 3. Insert payment record
         const insertQuery = `
-            INSERT INTO payments
-            (UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount, Currency, AmountPaidInUSD, CurrentRateToUSD, Status, Comments, OrderID, PaymentID, invoiceID)
+            INSERT INTO payments 
+            (UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount, Currency, AmountPaidInUSD, CurrentRateToUSD, Status, Comments, OrderID, PaymentID, invoiceID) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         const insertParams = [
@@ -766,8 +783,8 @@ bot.onText(/^\/usernameADDbalance (.+) (.+)$/, async (msg, match) => {
 
         // 4. Update account balance
         const updateQuery = `
-            UPDATE accounts
-            SET CurrentBalance = CurrentBalance + ?
+            UPDATE accounts 
+            SET CurrentBalance = CurrentBalance + ? 
             WHERE UserID = ?
         `;
         await db.query(updateQuery, [amount, userId]);
@@ -845,8 +862,8 @@ bot.onText(/\/useridADDbalance (\d+) (\d+(\.\d+)?)/, async (msg, match) => {
 
         // 4. Insert payment record
         const insertQuery = `
-            INSERT INTO payments
-            (UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount, Currency, AmountPaidInUSD, CurrentRateToUSD, Status, Comments, OrderID, PaymentID, invoiceID)
+            INSERT INTO payments 
+            (UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount, Currency, AmountPaidInUSD, CurrentRateToUSD, Status, Comments, OrderID, PaymentID, invoiceID) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         const insertParams = [
@@ -867,8 +884,8 @@ bot.onText(/\/useridADDbalance (\d+) (\d+(\.\d+)?)/, async (msg, match) => {
 
         // 5. Update balance
         const updateQuery = `
-            UPDATE accounts
-            SET CurrentBalance = CurrentBalance + ?
+            UPDATE accounts 
+            SET CurrentBalance = CurrentBalance + ? 
             WHERE UserID = ?
         `;
         await db.query(updateQuery, [amount, userId]);
@@ -915,7 +932,7 @@ bot.onText(/\/sendMessage (\d+) "(.*)"/, async (msg, match) => {
                  AND IsActive = 1`,
               [senderId]
           );
-
+  
           if (countRows[0].cnt === 0) {
               await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
               return;
@@ -1040,8 +1057,8 @@ bot.onText(/\/keyuserid\s+@?([A-Za-z0-9_]+)/i, async (msg, match) => {
 
     // 3) fetch keys issued in last 31 days
     const [keyRows] = await db.execute(
-      `SELECT FullKey, IssuedAt
-       FROM UserKeys
+      `SELECT FullKey, IssuedAt 
+       FROM UserKeys 
        WHERE UserID = ? AND IssuedAt >= NOW() - INTERVAL 31 DAY
        ORDER BY IssuedAt DESC`,
       [userId]
@@ -1120,7 +1137,7 @@ bot.onText(/\/expiredkeysnotify/, async (msg) => {
     const senderId = msg.from.id;
 
     try {
-        // 1) Check sender is active admin using COUNT
+ 	// 1) Check sender is active admin using COUNT
         const [countRows] = await db.execute(
             `SELECT COUNT(AdminID) AS cnt
              FROM Admins
@@ -1135,7 +1152,7 @@ bot.onText(/\/expiredkeysnotify/, async (msg) => {
             return;
         }
 
-        const [rows] = await db.execute(`
+	const [rows] = await db.execute(`
             SELECT UserID, GuiKey, ServerName
             FROM UserKeys
             WHERE DATE(ExpiredAt) = CURDATE();
@@ -1153,40 +1170,40 @@ bot.onText(/\/expiredkeysnotify/, async (msg) => {
 
         for (const row of rows) {
             //console.log('Processing row:', row); // Debugging
-
+            
             const { UserID, GuiKey, ServerName } = row;
-
+            
             if (!UserID || !GuiKey) {
                 console.warn(`Skipping row with missing data:`, row);
                 continue;
             }
-
+            
             const exists = await KeyExists(ServerName, GuiKey);
 
             if (exists) {
                 foundActiveKeys = true;
                 reply += `👤 UserID: \`${UserID}\`\n🗝️ Key: \`${GuiKey}\`\n🌐 Server: ${ServerName}\n\n`;
 
-                try {
-                        await bot.sendMessage(UserID, `Hello👋\nYour key \`${GuiKey}\` is expired. Please contact the admin to renew it.`);
-                        //console.log(`Expiration notice sent to UserID: ${UserID}`);
-                        await bot.sendMessage(chatId, `✅ Expiration notice for \`${GuiKey}\` has been sent to \`${UserID}\``);
-                        //await bot.sendMessage(chatId, `✅ Expiration notice for \`${GuiKey}\` has been sent to \`${UserID}\``, {parse_mode: 'MarkdownV2'});
+	    	try {
+    			await bot.sendMessage(UserID, `Hello👋\nYour key \`${GuiKey}\` is expired. Please contact the admin to renew it.`);
+    			//console.log(`Expiration notice sent to UserID: ${UserID}`);
+    			await bot.sendMessage(chatId, `✅ Expiration notice for \`${GuiKey}\` has been sent to \`${UserID}\``);
+			//await bot.sendMessage(chatId, `✅ Expiration notice for \`${GuiKey}\` has been sent to \`${UserID}\``, {parse_mode: 'MarkdownV2'});
 //await bot.sendMessage(chatId, `✅ Expiration notice for \`${GuiKey}\` has been sent to \`${UserID}\``, {parse_mode: 'MarkdownV2'});
-                } catch (error) {
-                        //console.error(`Failed to send expiration notice to UserID: ${UserID}`, error);
-                        await bot.sendMessage(chatId, `❌ Failed to send message for \`${GuiKey}\` to \`${UserID}\`. Error: ${error.message}`);
-                        //await bot.sendMessage(chatId, `❌ Failed to send message for \`${GuiKey}\` to \`${UserID}\`. Error: ${error.message}`, {parse_mode: 'MarkdownV2'});
-
+		} catch (error) {
+   	 		//console.error(`Failed to send expiration notice to UserID: ${UserID}`, error);
+    			await bot.sendMessage(chatId, `❌ Failed to send message for \`${GuiKey}\` to \`${UserID}\`. Error: ${error.message}`);
+    			//await bot.sendMessage(chatId, `❌ Failed to send message for \`${GuiKey}\` to \`${UserID}\`. Error: ${error.message}`, {parse_mode: 'MarkdownV2'});
+		
 // Optionally log this failure to a database or file
-                }
-            }
+		}
+	    }
         }
 
         if (!foundActiveKeys) {
             reply = '✅ No expired keys still active on servers.';
         }
-
+        
         await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
     } catch (err) {
         console.error(err);
@@ -1441,16 +1458,16 @@ bot.onText(/\/(hc|HiddenCommands)/, async (msg) => {
         const commandKeyboard = {
             reply_markup: {
                 keyboard: [
-                    ["/expiredkeys"],
-                    ["/expiredkeysnotify"],
-                    ["/useridADDbalance"],
+		    ["/expiredkeys"],
+		    ["/expiredkeysnotify"],
+		    ["/useridADDbalance"],
                     ["/usernameADDbalance"],
-                    ["/userbalanceuserID"],
+		    ["/userbalanceuserID"],
                     ["/userbalance"],
                     ["/sendMessage"],
                     ["/keyusername"],
-                    ["/keyuserid"],
-                    ["/removekey"]
+		    ["/keyuserid"],
+		    ["/removekey"]
                 ],
                 resize_keyboard: true,   // compact keyboard
                 one_time_keyboard: true  // auto-hide after use
@@ -1465,7 +1482,7 @@ bot.onText(/\/(hc|HiddenCommands)/, async (msg) => {
     }
 });
 
-
+    	
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
@@ -1475,42 +1492,42 @@ bot.on('callback_query', async (query) => {
 
 // !
     if (data === "speed_eg" || data === "speed_tur") {
-        return bot.editMessageText(
-                "⚠️ The chosen server is under development.\nPlease contact support.",
-                {
-                chat_id: chatId,
-                message_id: query.message.message_id,
-                reply_markup: {
-                        inline_keyboard: [
-                        [
-                                {
-                                text: "⬅️ Back",
-                                callback_data: "sub_1_speed"
-                                }
-                        ]
-                        ]
-                }
-                }
-        );
+    	return bot.editMessageText(
+        	"⚠️ The chosen server is under development.\nPlease contact support.",
+        	{
+            	chat_id: chatId,
+            	message_id: query.message.message_id,
+            	reply_markup: {
+                	inline_keyboard: [
+                    	[
+                        	{
+                            	text: "⬅️ Back",
+                            	callback_data: "sub_1_speed"
+                        	}
+                    	]
+                	]
+            	}
+        	}
+    	);
      }
 
 
     const regularSpeedCallbacks = Object.keys(callbackToServer); // i.e., speed_usa, speed_ir, etc.
 
     if (regularSpeedCallbacks.includes(data)) {
-        const selectedServer = callbackToServer[data];
-        bot.session = bot.session || {};
-        bot.session[userId] = {
-                selectedServer,
-                isInternational: false   // ✅ Optional, but helpful for clarity
-        };
+    	const selectedServer = callbackToServer[data];
+    	bot.session = bot.session || {};
+    	bot.session[userId] = {
+        	selectedServer,
+        	isInternational: false   // ✅ Optional, but helpful for clarity
+    	};
 
-        const bandwidthMenu = subMenus.bandwidth_menu;
-        return bot.editMessageText(bandwidthMenu.text, {
-                chat_id: chatId,
-                message_id: messageId,
-                reply_markup: bandwidthMenu.reply_markup
-        });
+    	const bandwidthMenu = subMenus.bandwidth_menu;
+    	return bot.editMessageText(bandwidthMenu.text, {
+        	chat_id: chatId,
+        	message_id: messageId,
+        	reply_markup: bandwidthMenu.reply_markup
+    	});
      }
 
 
@@ -1518,19 +1535,19 @@ bot.on('callback_query', async (query) => {
     const internationalSpeedCallbacks = Object.keys(callbackToInternationalServer);
 
     if (internationalSpeedCallbacks.includes(data)) {
-        const selectedServer = callbackToInternationalServer[data];
-        bot.session = bot.session || {};
-        bot.session[userId] = {
-                selectedServer,
-                isInternational: true    // ✅ Add this flag
-        };
+    	const selectedServer = callbackToInternationalServer[data];
+    	bot.session = bot.session || {};
+    	bot.session[userId] = {
+        	selectedServer,
+        	isInternational: true    // ✅ Add this flag
+    	};
 
-        const bandwidthMenu = subMenus.bandwidth_menu_int;  // ✅ Also make sure this is the INT menu
-        return bot.editMessageText(bandwidthMenu.text, {
-                chat_id: chatId,
-                message_id: messageId,
-                reply_markup: bandwidthMenu.reply_markup
-        });
+    	const bandwidthMenu = subMenus.bandwidth_menu_int;  // ✅ Also make sure this is the INT menu
+    	return bot.editMessageText(bandwidthMenu.text, {
+        	chat_id: chatId,
+        	message_id: messageId,
+        	reply_markup: bandwidthMenu.reply_markup
+    	});
     }
 
 
@@ -1539,7 +1556,7 @@ bot.on('callback_query', async (query) => {
     }
 
     if (data === 'speed_ger') {
-        return bot.sendMessage(chatId, '⚠️ Germany server is under development. Please check back later.');
+    	return bot.sendMessage(chatId, '⚠️ Germany server is under development. Please check back later.');
     }
 
 
@@ -1574,199 +1591,267 @@ bot.on('callback_query', async (query) => {
             }
         );
     }
+   
+	if (data.startsWith('bw_') || data.startsWith('int_bw_')) {
+    		const isInternational = data.startsWith('int_bw_');
+    		console.log(`⚡ BW Selection: data=${data}, isInternational=${isInternational}`);
+    		const bandwidthGb = parseInt(data.replace(isInternational ? 'int_bw_' : 'bw_', ''), 10);
 
-        if (data.startsWith('bw_') || data.startsWith('int_bw_')) {
-                const isInternational = data.startsWith('int_bw_');
-                console.log(`⚡ BW Selection: data=${data}, isInternational=${isInternational}`);
-                const bandwidthGb = parseInt(data.replace(isInternational ? 'int_bw_' : 'bw_', ''), 10);
+    	const bandwidthPrices = {
+        	40: 1.10,
+		50: 1.29,
+        	70: 1.95,
+        	100: 2.33,
+        	300: 5.60,
+        	500: 9.30,
+        	1000: 16.99
+    	};
 
-        const bandwidthPrices = {
-                40: 1.10,
-                50: 1.29,
-                70: 1.95,
-                100: 2.33,
-                300: 5.60,
-                500: 9.30,
-                1000: 16.99
-        };
+    	const requiredAmount = bandwidthPrices[bandwidthGb];
+    	const session = bot.session?.[userId];
 
-        const requiredAmount = bandwidthPrices[bandwidthGb];
-        const session = bot.session?.[userId];
+    	// Check server selection
+    	if (!session || !session.selectedServer) {
+        	await bot.sendMessage(chatId, '❌ Error: No server selected. Please start again.');
+        	return;
+    	}
 
-        // Check server selection
-        if (!session || !session.selectedServer) {
-                await bot.sendMessage(chatId, '❌ Error: No server selected. Please start again.');
-                return;
-        }
+    	// 🚦 Application-level lock (per-user)
+    	if (session.inProgress) {
+        	await bot.sendMessage(chatId, "⏳ Your request is already being processed. Please wait...");
+        	return;
+    	}
+    	session.inProgress = true;
 
-        // 🚦 Application-level lock (per-user)
-        if (session.inProgress) {
-                await bot.sendMessage(chatId, "⏳ Your request is already being processed. Please wait...");
-                return;
-        }
-        session.inProgress = true;
+    	const selectedServer = session.selectedServer;
 
-        const selectedServer = session.selectedServer;
+    	try {
+        	const eligible = await checkEligible(userId, chatId, bot);
+       		const balanceValue = await getUserBalance(userId);
 
-        try {
-                const eligible = await checkEligible(userId, chatId, bot);
-                const balanceValue = await getUserBalance(userId);
+        	console.log(`User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Required: $${requiredAmount}`);
 
-                console.log(`User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Required: $${requiredAmount}`);
+        	// Not enough balance
+        	if (!eligible && balanceValue < requiredAmount) {
+            		await bot.sendMessage(
+                	chatId,
+                	`❌ You need at least $${requiredAmount.toFixed(2)} to buy ${bandwidthGb} GB.\nYour current balance: $${balanceValue.toFixed(2)}.\n\nUse /payment to top up.`
+            	);
+            	return;
+        	}
 
-                // Not enough balance
-                if (!eligible && balanceValue < requiredAmount) {
-                        await bot.sendMessage(
-                        chatId,
-                        `❌ You need at least $${requiredAmount.toFixed(2)} to buy ${bandwidthGb} GB.\nYour current balance: $${balanceValue.toFixed(2)}.\n\nUse /payment to top up.`
-                );
-                return;
-                }
+        	// VIP info
+        	if (eligible) {
+            		await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
+        	}
 
-                // VIP info
-                if (eligible) {
-                        await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
-                }
+        	// ✅ Key generation logic
+        	if (isInternational) {
+            		const result = await createInternationalKey(userId, selectedServer, bandwidthGb, 30);
+            		await bot.sendMessage(chatId,
+                	`✅ Your *International* access key:\n\`${result.key}\`\n🌍 Server: ${result.server}\n⏳ Expires in: ${result.expiresIn} days`,
+                	{ parse_mode: 'Markdown' }
+            		);
+        	} else {
+            		const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
+            		await bot.sendMessage(chatId,
+                	`✅ Your access key:\n\`${newKey}\``,
+                	{ parse_mode: 'Markdown' }
+            	);
+        	}
 
-                // ✅ Key generation logic
-                if (isInternational) {
-                        const result = await createInternationalKey(userId, selectedServer, bandwidthGb, 30);
-                        await bot.sendMessage(chatId,
-                        `✅ Your *International* access key:\n\`${result.key}\`\n🌍 Server: ${result.server}\n⏳ Expires in: ${result.expiresIn} days`,
-                        { parse_mode: 'Markdown' }
-                        );
-                } else {
-                        const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
-                        await bot.sendMessage(chatId,
-                        `✅ Your access key:\n\`${newKey}\``,
-                        { parse_mode: 'Markdown' }
-                );
-                }
+        	// Deduct for non-VIP
+        	if (!eligible) {
+            		await deductBalance(userId, requiredAmount);
+            		await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
+        	}
 
-                // Deduct for non-VIP
-                if (!eligible) {
-                        await deductBalance(userId, requiredAmount);
-                        await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
-                }
+    	} catch (err) {
+        	console.error('❌ Error in bandwidth purchase:', err);
+        	await bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
+    	} finally {
+        	// 🔒 Always release lock & cleanup session
+        	delete bot.session[userId];
+    	}
 
-        } catch (err) {
-                console.error('❌ Error in bandwidth purchase:', err);
-                await bot.sendMessage(chatId, `❌ Failed to create key: ${err.message}`);
-        } finally {
-                // 🔒 Always release lock & cleanup session
-                delete bot.session[userId];
-        }
-
-        return;
+    	return;
     }
 
 
     if (data === 'arena_25gb' || data === 'arena_50gb') {
-        const bandwidthGb = data === 'arena_25gb' ? 25 : 50;
-        const selectedServer = 'IT01';
+    	const bandwidthGb = data === 'arena_25gb' ? 25 : 50;
+    	const selectedServer = 'IT01';
 
-        // Define Arena pricing
-        const arenaPrices = {
-                25: 0.99,  // Adjust these prices as needed
-                50: 1.89
-        };
+    	// Define Arena pricing
+    	const arenaPrices = {
+        	25: 0.99,  // Adjust these prices as needed
+        	50: 1.89
+    	};
 
-        const requiredAmount = arenaPrices[bandwidthGb];
+    	const requiredAmount = arenaPrices[bandwidthGb];
 
-        try {
-                const eligible = await Game_Arena_checkEligible(userId, chatId, bot);
-                const balanceValue = await getUserBalance(userId); // Should return number like 3.75
+    	try {
+        	const eligible = await Game_Arena_checkEligible(userId, chatId, bot);
+        	const balanceValue = await getUserBalance(userId); // Should return number like 3.75
 
-                console.log(`Arena | User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Needs: $${requiredAmount}`);
+        	console.log(`Arena | User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Needs: $${requiredAmount}`);
 
-                // Block if not eligible and not enough balance
-                if (!eligible && balanceValue < requiredAmount) {
-                        await bot.sendMessage(
-                        chatId,
+        	// Block if not eligible and not enough balance
+        	if (!eligible && balanceValue < requiredAmount) {
+            		await bot.sendMessage(
+                	chatId,
                 `❌ You need at least $${requiredAmount.toFixed(2)} to get ${bandwidthGb}GB Arena access.\nYour current balance: $${balanceValue.toFixed(2)}.\nUse /payment to top up.`
-                );
-                        return;
-                }
+            	);
+            		return;
+        	}
 
-                if (eligible) {
-                        await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive Arena access.`);
-                }
+        	if (eligible) {
+            		await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive Arena access.`);
+        	}
 
         // Create the key
-                const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
-                await bot.sendMessage(chatId, `✅ Your ${bandwidthGb}GB Arena key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
+        	const newKey = await createNewKey(selectedServer, userId, bandwidthGb);
+        	await bot.sendMessage(chatId, `✅ Your ${bandwidthGb}GB Arena key:\n\`${newKey}\``, { parse_mode: 'Markdown' });
 
-                // Deduct balance only for non-VIP
-                if (!eligible) {
-                        await deductBalance(userId, requiredAmount);
-                        await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
-                }
+        	// Deduct balance only for non-VIP
+        	if (!eligible) {
+            		await deductBalance(userId, requiredAmount);
+            		await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
+        	}
 
-        } catch (err) {
-                console.error('❌ Arena purchase error:', err);
-                await bot.sendMessage(chatId, `❌ Failed to create Arena key: ${err.message}`);
-        }
+    	} catch (err) {
+        	console.error('❌ Arena purchase error:', err);
+        	await bot.sendMessage(chatId, `❌ Failed to create Arena key: ${err.message}`);
+    	}
 
-                return;
-        }
+    		return;
+	}
 
 
     if (data.startsWith('wg_speed_')) {
 
-        bot.session ??= {};
-        bot.session[userId] ??= {};
+    	bot.session ??= {};
+    	bot.session[userId] ??= {};
 
-        bot.session[userId].vpnType = 'wireguard';
-        bot.session[userId].country =
+    	bot.session[userId].vpnType = 'wireguard';
+    	bot.session[userId].country =
         data.replace('wg_speed_', '');
+	// TEMPORARY: PublicURLIran isn't set up for WireGuard yet — always use
+	// PublicURLInternational for now. Switch this back to menu-based logic
+	// once PublicURLIran is properly configured for WG servers.
+	bot.session[userId].isInternational = true;
 
-        return bot.editMessageText(
-                subMenus.sub_wg_number_user.text,
-                {
-                chat_id: chatId,
-                message_id: messageId,
-                reply_markup: subMenus.sub_wg_number_user.reply_markup
-                }
-        );
+    	return bot.editMessageText(
+        	subMenus.sub_wg_number_user.text,
+        	{
+            	chat_id: chatId,
+            	message_id: messageId,
+            	reply_markup: subMenus.sub_wg_number_user.reply_markup
+        	}
+    	);
     }
 
     if (data.startsWith('wg_number_')) {
 
-        const devicesMap = {
-                wg_number_one_devices: 1,
-                wg_number_two_devices: 2,
-                wg_number_three_devices: 3
+    	const devicesMap = {
+        	wg_number_one_devices: 1,
+        	wg_number_two_devices: 2,
+        	wg_number_three_devices: 3
         };
 
-        bot.session[userId].devices =
-                devicesMap[data];
+    	bot.session[userId].devices =
+        	devicesMap[data];
 
-        return bot.editMessageText(
-                subMenus.sub_wgvpn_traffic.text,
-                {
-                chat_id: chatId,
-                message_id: messageId,
-                reply_markup: subMenus.sub_wgvpn_traffic.reply_markup
-                }
-        );
+    	return bot.editMessageText(
+        	subMenus.sub_wgvpn_traffic.text,
+        	{
+            	chat_id: chatId,
+            	message_id: messageId,
+            	reply_markup: subMenus.sub_wgvpn_traffic.reply_markup
+        	}
+    	);
     }
 
     if (data.startsWith('wg_bw_')) {
 
-        const bandwidth =
-                parseInt(data.replace('wg_bw_', ''), 10);
+        const bandwidthGb = parseInt(data.replace('wg_bw_', ''), 10);
+        const session = bot.session?.[userId];
 
-        const session = bot.session[userId];
+        if (!session || !session.country || !session.devices) {
+            await bot.sendMessage(chatId, '❌ Error: Missing selection. Please start again.');
+            return;
+        }
 
-        console.log(
-                session.country,
-                session.devices,
-                bandwidth
-        );
+        if (session.inProgress) {
+            await bot.sendMessage(chatId, '⏳ Your request is already being processed. Please wait...');
+            return;
+        }
+        session.inProgress = true;
 
-    // check balance
-    // create WG peer(s)
-    // deduct balance
+        const bandwidthPrices = {
+            40: 1.10,
+            50: 1.29,
+            70: 1.95,
+            100: 2.33,
+            300: 5.60,
+            1000: 16.99
+        };
+        const requiredAmount = bandwidthPrices[bandwidthGb];
+
+        const serverAlias = WG_COUNTRY_TO_ALIAS[session.country];
+        if (!serverAlias) {
+            await bot.sendMessage(chatId, `❌ Error: No server alias configured for "${session.country}" yet.`);
+            delete bot.session[userId];
+            return;
+        }
+
+        try {
+            const eligible = await checkEligible(userId, chatId, bot);
+            const balanceValue = await getUserBalance(userId);
+
+            console.log(`WG | User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Required: $${requiredAmount}`);
+
+            if (!eligible && balanceValue < requiredAmount) {
+                await bot.sendMessage(
+                    chatId,
+                    `❌ You need at least $${requiredAmount.toFixed(2)} to buy ${bandwidthGb} GB on ${session.devices} device(s).\nYour current balance: $${balanceValue.toFixed(2)}.\n\nUse /payment to top up.`
+                );
+                return;
+            }
+
+            if (eligible) {
+                await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
+            }
+
+            const peers = await createWireGuardKeys({
+                serverAlias,
+                userId,
+                deviceCount: session.devices,
+                bandwidthGb,
+                isInternational: session.isInternational
+            });
+
+            for (const peer of peers) {
+                await bot.sendMessage(
+                    chatId,
+                    `✅ Device ${peer.deviceSeq}/${peers.length} — your WireGuard config:\n\`\`\`\n${peer.config}\n\`\`\``,
+                    { parse_mode: 'Markdown' }
+                );
+            }
+
+            if (!eligible) {
+                await deductBalance(userId, requiredAmount);
+                await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
+            }
+
+        } catch (err) {
+            console.error('❌ Error in WireGuard purchase:', err);
+            await bot.sendMessage(chatId, `❌ Failed to create WireGuard key(s): ${err.message}`);
+        } finally {
+            delete bot.session[userId];
+        }
+
+        return;
     }
 
     // NOWPAYMENT → DOGECOIN SUBMENUS
@@ -1777,7 +1862,7 @@ bot.on('callback_query', async (query) => {
             reply_markup: {
                 inline_keyboard: [
                     [{ text: 'Dogecoin (DOGE)', callback_data: 'pay_doge' }],
-                    [{ text: 'Toncoin (Ton)', callback_data: 'pay_ton' }],
+		    [{ text: 'Toncoin (Ton)', callback_data: 'pay_ton' }],
                     [{ text: '⬅️ Go Back', callback_data: 'back_to_payment' }]
                 ]
             }
@@ -1823,68 +1908,68 @@ bot.on('callback_query', async (query) => {
     }
 
     if (data.startsWith('doge_pay_')) {
-        const amount = data.replace('doge_pay_', '');
-        const currency = 'DOGE';
-        console.log('🟡 Received DOGE payment request for amount:', amount);
+    	const amount = data.replace('doge_pay_', '');
+    	const currency = 'DOGE';
+    	console.log('🟡 Received DOGE payment request for amount:', amount);
 
-        try {
-                await bot.editMessageText(`🪙 Generating Dogecoin payment session for $${amount}`, {
-                chat_id: chatId,
-                message_id: messageId
-                });
-                console.log('🟢 Edited message successfully');
+    	try {
+        	await bot.editMessageText(`🪙 Generating Dogecoin payment session for $${amount}`, {
+            	chat_id: chatId,
+            	message_id: messageId
+        	});
+        	console.log('🟢 Edited message successfully');
 
-                const result = await createNowPaymentsSession(chatId, amount, currency);
-                console.log('🔵 Got NowPayments response:', result);
+        	const result = await createNowPaymentsSession(chatId, amount, currency);
+        	console.log('🔵 Got NowPayments response:', result);
 
-                if (result && result.payment_url && result.order_id) {
-                        const paymentUrl = result.payment_url;
-                        const orderId = result.order_id;
-                        const paymentId = result.payment_id;
-                        console.log('🟣 Using NowPayments OrderID:', orderId);
+        	if (result && result.payment_url && result.order_id) {
+            		const paymentUrl = result.payment_url;
+            		const orderId = result.order_id;
+			const paymentId = result.payment_id;
+            		console.log('🟣 Using NowPayments OrderID:', orderId);
 
-                        const sql = `
-                                INSERT INTO payments (
-                                UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount,
-                                Currency, AmountPaidInUSD, CurrentRateToUSD,
-                                Status, Comments, OrderID, PaymentID
-                                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+            		const sql = `
+    				INSERT INTO payments (
+        			UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount,
+        			Currency, AmountPaidInUSD, CurrentRateToUSD,
+        			Status, Comments, OrderID, PaymentID
+    				) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-                        const values = [
-                        chatId,                 // UserID
-                        'crypto',               // PaymentMethod
-                        null,                   // DigitalCurrencyAmount
-                        currency,               // Currency: DOGE
-                        parseFloat(amount),     // AmountPaidInUSD
-                        null,                   // CurrentRateToUSD
-                        'waiting',              // Status
-                        'DOGE pending payment', // Comments
-                        orderId,                 // OrderID
-                        paymentId              // ✅ REQUIRED for NowPayments status checks
-                        ];
+            		const values = [
+                	chatId,                 // UserID
+                	'crypto',               // PaymentMethod
+                	null,                   // DigitalCurrencyAmount
+                	currency,               // Currency: DOGE
+                	parseFloat(amount),     // AmountPaidInUSD
+                	null,                   // CurrentRateToUSD
+                	'waiting',              // Status
+                	'DOGE pending payment', // Comments
+                	orderId,                 // OrderID
+			paymentId              // ✅ REQUIRED for NowPayments status checks
+            		];
 
-                        try {
-                                await db.query(sql, values);
-                                console.log('✅ Payment record inserted using NowPayments OrderID');
-                        } catch (dbErr) {
-                                console.error('❌ Error inserting payment into DB:', dbErr);
-                        }
+            		try {
+                		await db.query(sql, values);
+                		console.log('✅ Payment record inserted using NowPayments OrderID');
+            		} catch (dbErr) {
+                		console.error('❌ Error inserting payment into DB:', dbErr);
+            		}
 
-                await bot.sendMessage(chatId, `✅ Click the link below to pay with Dogecoin:\n\n${paymentUrl}`);
-                } else {
-                        await bot.sendMessage(chatId, '❌ Failed to create payment session. Please try again later.');
-                }
-        } catch (err) {
-                console.error('❌ Error handling Dogecoin payment:', err);
-                await bot.sendMessage(chatId, '⚠️ An error occurred while generating your Dogecoin payment link.');
-        }
+            	await bot.sendMessage(chatId, `✅ Click the link below to pay with Dogecoin:\n\n${paymentUrl}`);
+        	} else {
+            		await bot.sendMessage(chatId, '❌ Failed to create payment session. Please try again later.');
+        	}
+    	} catch (err) {
+        	console.error('❌ Error handling Dogecoin payment:', err);
+        	await bot.sendMessage(chatId, '⚠️ An error occurred while generating your Dogecoin payment link.');
+    	}
     }
 
 
 
 
     if (data === 'pay_ton') {
-        return bot.editMessageText('🔗 Choose the TON network:', {
+    	return bot.editMessageText('🔗 Choose the TON network:', {
         chat_id: chatId,
         message_id: messageId,
         reply_markup: {
@@ -1893,32 +1978,32 @@ bot.on('callback_query', async (query) => {
                 [{ text: '⬅️ Go Back', callback_data: 'pay_nowpayment' }]
             ]
         }
-        });
+    	});
     }
 
     if (data === 'ton_network_native') {
-        return bot.editMessageText('💰 Choose the amount to pay in USD:', {
-                chat_id: chatId,
-                message_id: messageId,
-                reply_markup: {
-                inline_keyboard: [
-                        [
+    	return bot.editMessageText('💰 Choose the amount to pay in USD:', {
+        	chat_id: chatId,
+        	message_id: messageId,
+        	reply_markup: {
+            	inline_keyboard: [
+                	[
                     //{ text: '$1', callback_data: 'ton_pay_1' },
-                        { text: '$2', callback_data: 'ton_pay_2' },
-                        { text: '$5', callback_data: 'ton_pay_5' }
-                        ],
-                        [
-                        { text: '$10', callback_data: 'ton_pay_10' },
-                        { text: '$20', callback_data: 'ton_pay_20' }
-                        ],
-                        [
-                        { text: '$50', callback_data: 'ton_pay_50' },
-                        { text: '$100', callback_data: 'ton_pay_100' }
-                        ],
-                        [{ text: '⬅️ Go Back', callback_data: 'pay_ton' }]
-                ]
-                }
-        });
+                    	{ text: '$2', callback_data: 'ton_pay_2' },
+                    	{ text: '$5', callback_data: 'ton_pay_5' }
+                	],
+                	[
+                    	{ text: '$10', callback_data: 'ton_pay_10' },
+                    	{ text: '$20', callback_data: 'ton_pay_20' }
+                	],
+                	[
+                    	{ text: '$50', callback_data: 'ton_pay_50' },
+                    	{ text: '$100', callback_data: 'ton_pay_100' }
+                	],
+                	[{ text: '⬅️ Go Back', callback_data: 'pay_ton' }]
+            	]
+        	}
+    	});
     }
 
 if (data.startsWith('ton_pay_')) {
@@ -1939,33 +2024,33 @@ if (data.startsWith('ton_pay_')) {
 
         // Ensure result contains required fields
         if (result && result.payment_url && result.orderId) {
-                const paymentUrl = result.payment_url;
-                const orderId = result.orderId;
-                const paymentId = result.paymentId;
-                const invoiceId = result.invoiceid;
-                console.log('  Using NowPayments OrderID:', orderId);
+    		const paymentUrl = result.payment_url;
+    		const orderId = result.orderId;
+    		const paymentId = result.paymentId;
+    		const invoiceId = result.invoiceid;
+    		console.log('  Using NowPayments OrderID:', orderId);
 
-                const sql = `
-                        INSERT INTO payments (
-                        UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount,
-                        Currency, AmountPaidInUSD, CurrentRateToUSD,
-                        Status, Comments, OrderID, PaymentID, invoiceID
-                        ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    		const sql = `
+        		INSERT INTO payments (
+            		UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount,
+            		Currency, AmountPaidInUSD, CurrentRateToUSD,
+            		Status, Comments, OrderID, PaymentID, invoiceID
+        		) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-                const values = [
-                        chatId,                // UserID
-                        'crypto',              // PaymentMethod
-                        null,                  // DigitalCurrencyAmount (to be updated later)
-                        currency,              // Currency: TON
-                        parseFloat(amount),    // AmountPaidInUSD
-                        null,                  // CurrentRateToUSD (to be updated later)
-                        'waiting',             // Status
-                        'TON pending payment', // Comments
-                        orderId,               // OrderID from NowPayments
-                        paymentId,             // PaymentID
-                        invoiceId              // invoiceID from NowPayments
-                ];
-
+    		const values = [
+        		chatId,                // UserID
+        		'crypto',              // PaymentMethod
+        		null,                  // DigitalCurrencyAmount (to be updated later)
+        		currency,              // Currency: TON
+        		parseFloat(amount),    // AmountPaidInUSD
+        		null,                  // CurrentRateToUSD (to be updated later)
+        		'waiting',             // Status
+        		'TON pending payment', // Comments
+        		orderId,               // OrderID from NowPayments
+        		paymentId,             // PaymentID
+        		invoiceId              // invoiceID from NowPayments
+    		];
+	
 
             try {
                 await db.query(sql, values);
@@ -2005,3 +2090,5 @@ if (data.startsWith('ton_pay_')) {
         text: '✅ Option selected.'
     });
 });
+
+
