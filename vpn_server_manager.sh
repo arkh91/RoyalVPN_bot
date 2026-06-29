@@ -8,9 +8,10 @@ echo "      VPN Server Manager (MySQL)"
 echo "======================================"
 echo ""
 
-echo "1) Insert new server"
-echo "2) Update existing server"
-read -p "Select option [1-2]: " OPTION
+echo "1) View all servers"
+echo "2) Insert new server"
+echo "3) Update existing server"
+read -p "Select option [1-3]: " OPTION
 
 # -----------------------------
 # COMMON INPUT FUNCTION
@@ -27,6 +28,30 @@ ask() {
     fi
 
     eval "$var_name=\"$value\""
+}
+
+# -----------------------------
+# VIEW ALL SERVERS
+# -----------------------------
+view_servers() {
+
+    echo ""
+    echo "=== All Servers ==="
+    echo ""
+
+    mysql -u "$DB_USER" -D "$DB_NAME" --vertical -e \
+        "SELECT ServerID, ServerName, ServerAlias, Country, City,
+                PublicURLInternational, PublicURLIran,
+                WireGuardPort, OutlinePort,
+                IPAddress, APIKey, BearerToken,
+                MaxUsers, CurrentUsers, Status,
+                CreatedAt, UpdatedAt
+         FROM vpn_servers
+         ORDER BY ServerID;"
+
+    if [[ $? -ne 0 ]]; then
+        echo "❌ Failed to fetch servers. Check MySQL connection."
+    fi
 }
 
 # -----------------------------
@@ -116,8 +141,16 @@ update_server() {
     read -p "PublicURLInternational: " PublicURLInternational
     read -p "PublicURLIran: " PublicURLIran
     read -p "WireGuardPort: " WireGuardPort
-    read -p "OutlinePort: " OutlinePort
-    read -p "Status (ACTIVE/INACTIVE): " Status
+    read -p "OutlinePort (or 0 for NULL): " OutlinePort
+    read -p "IPAddress (or type NULL): " IPAddress
+    read -p "APIKey (or type NULL): " APIKey
+    read -p "BearerToken (or type NULL): " BearerToken
+    read -p "MaxUsers: " MaxUsers
+    read -p "Status (ACTIVE/INACTIVE/MAINTENANCE/FULL): " Status
+
+    if [[ "$OutlinePort" == "0" ]]; then
+        OutlinePort="NULL"
+    fi
 
     SQL="UPDATE vpn_servers SET "
 
@@ -129,7 +162,17 @@ update_server() {
     [[ ! -z "$PublicURLIran" ]] && SQL+="PublicURLIran='$PublicURLIran',"
     [[ ! -z "$WireGuardPort" ]] && SQL+="WireGuardPort=$WireGuardPort,"
     [[ ! -z "$OutlinePort" ]] && SQL+="OutlinePort=$OutlinePort,"
+    [[ ! -z "$IPAddress" ]] && SQL+="IPAddress=NULLIF('$IPAddress','NULL'),"
+    [[ ! -z "$APIKey" ]] && SQL+="APIKey=NULLIF('$APIKey','NULL'),"
+    [[ ! -z "$BearerToken" ]] && SQL+="BearerToken=NULLIF('$BearerToken','NULL'),"
+    [[ ! -z "$MaxUsers" ]] && SQL+="MaxUsers=$MaxUsers,"
     [[ ! -z "$Status" ]] && SQL+="Status='$Status',"
+
+    # If nothing was entered, there's no SET clause yet — bail out cleanly
+    if [[ "$SQL" == "UPDATE vpn_servers SET " ]]; then
+        echo "ℹ️  No fields entered — nothing to update."
+        return
+    fi
 
     # remove trailing comma
     SQL=${SQL%,}
@@ -150,9 +193,12 @@ update_server() {
 # -----------------------------
 case $OPTION in
     1)
-        insert_server
+        view_servers
         ;;
     2)
+        insert_server
+        ;;
+    3)
         update_server
         ;;
     *)
