@@ -110,7 +110,7 @@ async function getServerByAlias(serverAlias) {
 
     return server;
 }
-
+/*
 // ──────────────────────────────────────────────────────────────
 // Call /create once against the chosen server and return the
 // parsed peer info (does NOT touch the DB).
@@ -163,7 +163,73 @@ async function requestNewPeer(server, isInternational) {
         rawConfig: parsed.rawConfig
     };
 }
+*/
+async function requestNewPeer(server, isInternational) {
+    // Always call the management API over the international hostname —
+    // PublicURLIran is the client-facing tunnel endpoint, not reachable
+    // (or not meant) for the /create API call itself.
+    let apiBaseUrl = server.PublicURLInternational;
+    if (!apiBaseUrl) {
+        throw new Error(`Server "${server.ServerAlias}" has no PublicURLInternational configured`);
+    }
+    if (!server.BearerToken) {
+        throw new Error(`Server "${server.ServerAlias}" has no BearerToken configured`);
+    }
 
+    if (!/^https?:\/\//i.test(apiBaseUrl)) {
+        apiBaseUrl = `https://${apiBaseUrl}`;
+    }
+
+    const createUrl = `${apiBaseUrl.replace(/\/$/, '')}/create`;
+
+    let response;
+    try {
+        response = await axios.post(createUrl, {}, {
+            headers: {
+                Authorization: `Bearer ${server.BearerToken}`,
+                'Content-Type': 'application/json'
+            },
+            timeout: 15000
+        });
+    } catch (error) {
+        handleError(error, 'requestNewPeer');
+        throw error;
+    }
+
+    const parsed = parseClientConfigText(
+        typeof response.data === 'string' ? response.data : JSON.stringify(response.data)
+    );
+
+    const publicKey = derivePublicKeyFromPrivate(parsed.privateKey);
+
+    // The Endpoint the *user* connects to is independent of which host
+    // we used to call /create. Pick it based on isInternational, and
+    // override whatever the server returned in its own config text.
+    const tunnelHost = isInternational ? server.PublicURLInternational : server.PublicURLIran;
+    if (!tunnelHost) {
+        throw new Error(`Server "${server.ServerAlias}" has no ${isInternational ? 'PublicURLInternational' : 'PublicURLIran'} configured for the tunnel endpoint`);
+    }
+
+    const endpoint = `${tunnelHost}:${server.WireGuardPort}`;
+
+    // Rewrite the Endpoint line in the raw config text so what the user
+    // pastes/imports matches `endpoint` exactly.
+    const rewrittenConfig = parsed.rawConfig.replace(
+        /Endpoint\s*=\s*\S+/,
+        `Endpoint = ${endpoint}`
+    );
+
+    return {
+        privateKey: parsed.privateKey,
+        publicKey,
+        address: parsed.address,
+        dns: parsed.dns,
+        allowedIps: parsed.allowedIps,
+        serverPublicKey: parsed.serverPublicKey,
+        endpoint,
+        rawConfig: rewrittenConfig
+    };
+}
 // ──────────────────────────────────────────────────────────────
 // Insert one row into wg_clients, matching the real schema exactly:
 // client_id, UserID, name, description, server_name, private_key,
@@ -223,7 +289,12 @@ async function createWireGuardKeys({ serverAlias, userId, deviceCount, bandwidth
     const server = await getServerByAlias(serverAlias);
 
     // Same byte convention KeyCreation.js (Outline) uses for "GB":
-    const maxDataLimit = bandwidthGb * 1024 * 1024 * 1000;
+    //const maxDataLimit = bandwidthGb * 1024 * 1024 * 1000;
+
+// Total purchased bandwidth is split evenly across devices —
+// e.g. 50GB / 2 devices = 25GB cap per peer.
+const perDeviceGb = bandwidthGb / deviceCount;
+const maxDataLimit = perDeviceGb * 1024 * 1024 * 1000;
 
     const timestamp = Date.now();
     const results = [];
