@@ -38,7 +38,7 @@ const token = ''; //RoyalVPN
 //const token = ''; //Test
 //const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
-//const NOWPAYMENTS_API_KEY = '4PPCTPB-385MXPM-N5DBCGX-KV64DPY';
+//const NOWPAYMENTS_API_KEY = '4DPY';
 
 const createNowPaymentsSession = require('./createNowPaymentsSession');
 
@@ -71,13 +71,14 @@ fs.watchFile('./callbacks.json', { interval: 2000 }, () => {
 // is a deliberate ops decision, not something to load-balance automatically.
 const WG_COUNTRY_TO_ALIAS = {
     ger: 'Ger27',
-    // sweden: 'XXX',  // TODO: fill in
+    sweden: 'S84',  // TODO: fill in
     // fin: 'XXX',
-    // it: 'XXX',
+    it: 'IT01',
     // nig: 'XXX',
     // tur: 'XXX',
     // in: 'XXX',
     // eg: 'XXX',
+	Tha: 'Thai02',
     // uk: 'XXX',
      usa: 'US08',
 };
@@ -120,10 +121,6 @@ const bot = new TelegramBot(token, {
     }
 });
 
-// Export for use in webhook.js
-//module.exports = bot;
-
-
 const mainMenu = {
     reply_markup: {
         inline_keyboard: [
@@ -163,18 +160,18 @@ const subMenus = {
                     { text: 'Sweden 🇸🇪', callback_data: 'wg_speed_sweden' }
                 ],
                 [
-                    { text: 'Finland 🇫🇮 ', callback_data: 'wg_speed_fin' },
+                    { text: 'Thailand 🇹🇭 ', callback_data: 'wg_speed_tha' },
                     //{ text: 'Iran 🇮🇷', callback_data: 'speed_ir' }
                     { text: 'Italy 🇮🇹 ', callback_data: 'wg_speed_it' }
                 ],
-                [
-                    { text: 'Nigeria 🇳🇬 ', callback_data: 'wg_speed_nig' },
-                    { text: 'Turkey 🇹🇷 ', callback_data: 'wg_speed_tur' }
-                ],
-                [
-                    { text: 'India 🇮🇳', callback_data: 'wg_speed_in' },
-                    { text: 'Egypt 🇪🇬 ' , callback_data: 'wg_speed_eg' }
-                ],
+                //[
+                    //{ text: 'Nigeria 🇳🇬 ', callback_data: 'wg_speed_nig' },
+                    //{ text: 'Turkey 🇹🇷 ', callback_data: 'wg_speed_tur' }
+                //],
+                //[
+                  //  { text: 'India 🇮🇳', callback_data: 'wg_speed_in' },
+                   // { text: 'Egypt 🇪🇬 ' , callback_data: 'wg_speed_eg' }
+                //],
                 [
                     { text: 'UK 🇬🇧 ', callback_data: 'wg_speed_uk' },
                     { text: 'USA 🇺🇸', callback_data: 'wg_speed_usa' }
@@ -241,18 +238,19 @@ const subMenus = {
                     { text: 'Sweden 🇸🇪', callback_data: 'speed_sweden' }
                 ],
                 [
-                    { text: 'Finland 🇫🇮 ', callback_data: 'speed_fin' },
+                    //{ text: 'Finland 🇫🇮 ', callback_data: 'speed_fin' },
+                    { text: 'Thailand 🇹🇭 ', callback_data: 'speed_thailand'},
                     //{ text: 'Iran 🇮🇷', callback_data: 'speed_ir' }
                     { text: 'Italy 🇮🇹 ', callback_data: 'speed_it' }
                 ],
-                [
-                    { text: 'Nigeria 🇳🇬 ', callback_data: 'speed_nig' },
-                    { text: 'Turkey 🇹🇷 ', callback_data: 'speed_tur' }
-                ],
-                [
-                    { text: 'India 🇮🇳', callback_data: 'speed_in' },
-                    { text: 'Egypt 🇪🇬 ' , callback_data: 'speed_eg' }
-                ],
+                //[
+                    //{ text: 'Nigeria 🇳🇬 ', callback_data: 'speed_nig' },
+                    //{ text: 'Turkey 🇹🇷 ', callback_data: 'speed_tur' }
+                //],
+                //[
+                    //{ text: 'India 🇮🇳', callback_data: 'speed_in' },
+                    //{ text: 'Egypt 🇪🇬 ' , callback_data: 'speed_eg' }
+                //],
                 [
                     { text: 'UK 🇬🇧 ', callback_data: 'speed_uk' },
                     { text: 'USA 🇺🇸', callback_data: 'speed_usa' }
@@ -610,10 +608,10 @@ bot.on('callback_query', async (query) => {
         bot.session[userId].vpnType = 'wireguard';
         bot.session[userId].country =
         data.replace('wg_speed_', '');
-	// TEMPORARY: PublicURLIran isn't set up for WireGuard yet — always use
-	// PublicURLInternational for now. Switch this back to menu-based logic
-	// once PublicURLIran is properly configured for WG servers.
-	bot.session[userId].isInternational = true;
+        // TEMPORARY: PublicURLIran isn't set up for WireGuard yet — always use
+        // PublicURLInternational for now. Switch this back to menu-based logic
+        // once PublicURLIran is properly configured for WG servers.
+        bot.session[userId].isInternational = true;
 
         return bot.editMessageText(
                 subMenus.sub_wg_number_user.text,
@@ -632,8 +630,11 @@ bot.on('callback_query', async (query) => {
                 wg_number_two_devices: 2,
                 wg_number_three_devices: 3
         };
-
-        bot.session[userId].devices = devicesMap[data];
+if (!bot.session[userId]) {
+    bot.session[userId] = {};
+}
+bot.session[userId].devices = devicesMap[data];
+        //bot.session[userId].devices = devicesMap[data];
 
         const trafficMenu = buildWgTrafficMenu(bot.session[userId].devices);
 
@@ -644,79 +645,91 @@ bot.on('callback_query', async (query) => {
         });
     }
 
-    if (data.startsWith('wg_bw_')) {
+if (data.startsWith('wg_bw_')) {
+    const bandwidth = parseInt(data.replace('wg_bw_', ''), 10);
+    const session = bot.session?.[userId];
 
-        const bandwidthGb = parseInt(data.replace('wg_bw_', ''), 10);
-        const session = bot.session?.[userId];
+    if (!session || !session.country || !session.devices) {
+        await bot.sendMessage(chatId, '❌ Session expired. Please start again.');
+        return;
+    }
 
-        if (!session || !session.country || !session.devices) {
-                await bot.sendMessage(chatId, '❌ Error: Missing selection. Please start again.');
-                return;
-        }
+    if (session.inProgress) {
+        await bot.sendMessage(chatId, '⏳ Your request is already being processed. Please wait...');
+        return;
+    }
+    session.inProgress = true;
 
-        if (session.inProgress) {
-                await bot.sendMessage(chatId, '⏳ Your request is already being processed. Please wait...');
-                return;
-        }
-        session.inProgress = true;
+    //const requiredAmount = WG_BASE_BANDWIDTH_PRICES[bandwidth];
+        const EXTRA_DEVICE_FEE = 1.00;
+//const requiredAmount = WG_BASE_BANDWIDTH_PRICES[bandwidth] + (session.devices - 1) * EXTRA_DEVICE_FEE;
 
-        const requiredAmount = getWgPrice(bandwidthGb, session.devices);
+const requiredAmount = Math.round(
+    (WG_BASE_BANDWIDTH_PRICES[bandwidth] + (session.devices - 1) * EXTRA_DEVICE_FEE) * 100
+) / 100;
+    if (!requiredAmount) {
+        await bot.sendMessage(chatId, '❌ Invalid bandwidth selection.');
+        delete bot.session[userId];
+        return;
+    }
 
-        const serverAlias = WG_COUNTRY_TO_ALIAS[session.country];
-        if (!serverAlias) {
-            await bot.sendMessage(chatId, `❌ Error: No server alias configured for "${session.country}" yet.`);
-            delete bot.session[userId];
+    const serverAlias = WG_COUNTRY_TO_ALIAS[session.country];
+    if (!serverAlias) {
+        await bot.sendMessage(chatId, `❌ No server configured for country: ${session.country}`);
+        delete bot.session[userId];
+        return;
+    }
+
+    try {
+        const eligible = await checkEligible(userId, chatId, bot);
+        const balanceValue = await getUserBalance(userId);
+
+        console.log(`WG | User ${userId} | Country: ${session.country} | Devices: ${session.devices} | BW: ${bandwidth}GB | Balance: $${balanceValue} | Required: $${requiredAmount}`);
+
+        if (!eligible && balanceValue < requiredAmount) {
+            await bot.sendMessage(
+                chatId,
+                `❌ You need at least $${requiredAmount.toFixed(2)} to buy ${bandwidth} GB.\nYour current balance: $${balanceValue.toFixed(2)}.\n\nUse /payment to top up.`
+            );
             return;
         }
 
-        try {
-            const eligible = await checkEligible(userId, chatId, bot);
-            const balanceValue = await getUserBalance(userId);
-
-            console.log(`WG | User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Required: $${requiredAmount}`);
-
-            if (!eligible && balanceValue < requiredAmount) {
-                await bot.sendMessage(
-                    chatId,
-                    `❌ You need at least $${requiredAmount.toFixed(2)} to buy ${bandwidthGb} GB on ${session.devices} device(s).\nYour current balance: $${balanceValue.toFixed(2)}.\n\nUse /payment to top up.`
-                );
-                return;
-            }
-
-            if (eligible) {
-                await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
-            }
-
-            const peers = await createWireGuardKeys({
-                serverAlias,
-                userId,
-                deviceCount: session.devices,
-                bandwidthGb,
-                isInternational: session.isInternational
-            });
-
-            for (const peer of peers) {
-                await bot.sendMessage(
-                    chatId,
-                    `✅ Device ${peer.deviceSeq}/${peers.length} — your WireGuard config:\n\`\`\`\n${peer.config}\n\`\`\``,
-                    { parse_mode: 'Markdown' }
-                );
-            }
-
-            if (!eligible) {
-                await deductBalance(userId, requiredAmount);
-                await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
-            }
-
-        } catch (err) {
-            console.error('❌ Error in WireGuard purchase:', err);
-            await bot.sendMessage(chatId, `❌ Failed to create WireGuard key(s): ${err.message}`);
-        } finally {
-            delete bot.session[userId];
+        if (eligible) {
+            await bot.sendMessage(chatId, `✅ You are on the VIP list! Enjoy exclusive access.`);
         }
 
-        return;
+        const { createWireGuardKeys } = require('./db/WGKeyCreation');
+        const peers = await createWireGuardKeys({
+            serverAlias,
+            userId,
+            deviceCount:     session.devices,
+            bandwidthGb:     bandwidth,
+            isInternational: false,   // ← uses PublicURLIran
+            validDays:       30
+        });
+
+        for (const peer of peers) {
+            await bot.sendMessage(
+                chatId,
+                `✅ *WireGuard Config (Device ${peer.deviceSeq}/${session.devices})*\n\n\`\`\`\n${peer.config}\n\`\`\``,
+                { parse_mode: 'Markdown' }
+            );
+        }
+
+        if (!eligible) {
+            await deductBalance(userId, requiredAmount);
+            await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
+        }
+
+    } catch (err) {
+        console.error('❌ WireGuard purchase error:', err);
+        await bot.sendMessage(chatId, `❌ Failed to create WireGuard key: ${err.message}`);
+    } finally {
+        delete bot.session[userId];
     }
+
+    return;
+}
 
     // NOWPAYMENT → DOGECOIN SUBMENUS
     if (data === 'pay_nowpayment') {
