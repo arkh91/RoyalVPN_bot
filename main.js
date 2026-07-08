@@ -33,12 +33,8 @@ let callbackToServer = {};
 let callbackToInternationalServer = {};
 
 
-
-const token = ''; //RoyalVPN
-//const token = ''; //Test
-//const { TELEGRAM_BOT_TOKEN } = require('./token');
+const { TELEGRAM_BOT_TOKEN } = require('./token');
 const { NOWPAYMENTS_API_KEY } = require('./token');
-//const NOWPAYMENTS_API_KEY = '4DPY';
 
 const createNowPaymentsSession = require('./createNowPaymentsSession');
 
@@ -78,7 +74,7 @@ const WG_COUNTRY_TO_ALIAS = {
     // tur: 'XXX',
     // in: 'XXX',
     // eg: 'XXX',
-	Tha: 'Thai02',
+    tha: 'Thai02',
     // uk: 'XXX',
      usa: 'US08',
 };
@@ -113,7 +109,8 @@ function buildWgTrafficMenu(deviceCount) {
 
 const waitingForKey = new Set();
 
-const bot = new TelegramBot(token, {
+const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, {
+//const bot = new TelegramBot(token, {
     polling: {
         interval: 300,
         autoStart: true,
@@ -263,13 +260,14 @@ const subMenus = {
         text: 'Select the 30-day Outline bandwidth limit:',
         reply_markup: {
             inline_keyboard: [
+                [{ text: '20 GB / 1.00 USD', callback_data: 'bw_20' }],
                 [{ text: '40 GB / 1.10 USD', callback_data: 'bw_40' }],
                 [{ text: '50 GB / 1.29 USD', callback_data: 'bw_50' }],
                 [{ text: '70 GB / 1.95 USD', callback_data: 'bw_70' }],
                 [{ text: '100 GB / 2.33 USD', callback_data: 'bw_100' }],
                 [{ text: '300 GB / 5.60 USD', callback_data: 'bw_300' }],
                 //[{ text: '500 GB / 9.30 USD', callback_data: 'bw_500' }],
-                [{ text: '1000 GB / 16.99 USD', callback_data: 'bw_1000' }],
+                //[{ text: '1000 GB / 16.99 USD', callback_data: 'bw_1000' }],
                 [{ text: '⬅️ Go Back', callback_data: 'sub_1_speed' }]
             ]
         }
@@ -312,6 +310,7 @@ const subMenus = {
         text: 'Select the 30-day Outline bandwidth limit:',
         reply_markup: {
             inline_keyboard: [
+
                 [{ text: '50 GB / 1.29 USD', callback_data: 'int_bw_50' }],
                 [{ text: '100 GB / 2.33 USD', callback_data: 'int_bw_100' }],
                 [{ text: '300 GB / 5.60 USD', callback_data: 'int_bw_300' }],
@@ -470,6 +469,7 @@ bot.on('callback_query', async (query) => {
                 const bandwidthGb = parseInt(data.replace(isInternational ? 'int_bw_' : 'bw_', ''), 10);
 
         const bandwidthPrices = {
+                20: 1.00,
                 40: 1.10,
                 50: 1.29,
                 70: 1.95,
