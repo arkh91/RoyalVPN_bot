@@ -260,12 +260,12 @@ const subMenus = {
         text: 'Select the 30-day Outline bandwidth limit:',
         reply_markup: {
             inline_keyboard: [
-                [{ text: '20 GB / 1.00 USD', callback_data: 'bw_20' }],
-                [{ text: '40 GB / 1.10 USD', callback_data: 'bw_40' }],
+                [{ text: '20 GB / 0.99 USD', callback_data: 'bw_20' }],
+                [{ text: '40 GB / 1.19 USD', callback_data: 'bw_40' }],
                 [{ text: '50 GB / 1.29 USD', callback_data: 'bw_50' }],
-                [{ text: '70 GB / 1.95 USD', callback_data: 'bw_70' }],
-                [{ text: '100 GB / 2.33 USD', callback_data: 'bw_100' }],
-                [{ text: '300 GB / 5.60 USD', callback_data: 'bw_300' }],
+                [{ text: '70 GB / 1.79 USD', callback_data: 'bw_70' }],
+                [{ text: '100 GB / 2.29 USD', callback_data: 'bw_100' }],
+                [{ text: '300 GB / 5.49 USD', callback_data: 'bw_300' }],
                 //[{ text: '500 GB / 9.30 USD', callback_data: 'bw_500' }],
                 //[{ text: '1000 GB / 16.99 USD', callback_data: 'bw_1000' }],
                 [{ text: '⬅️ Go Back', callback_data: 'sub_1_speed' }]
@@ -469,12 +469,12 @@ bot.on('callback_query', async (query) => {
                 const bandwidthGb = parseInt(data.replace(isInternational ? 'int_bw_' : 'bw_', ''), 10);
 
         const bandwidthPrices = {
-                20: 1.00,
-                40: 1.10,
+                20: 0.99,
+                40: 1.19,
                 50: 1.29,
-                70: 1.95,
-                100: 2.33,
-                300: 5.60,
+                70: 1.79,
+                100: 2.29,
+                300: 5.49,
                 500: 9.30,
                 1000: 16.99
         };
