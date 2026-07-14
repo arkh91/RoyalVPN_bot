@@ -8,7 +8,9 @@
 //       db, insertUser, insertVisit, getKeyStatusResponseMessage,
 //       KeyExists, SERVERS, axios, https, mainMenu, waitingForKey
 //   });
-
+const { getKeysUsage, formatBytes } = require('./getKeysUsage');
+const registerKsCommand = require('./ks_handler')
+;
 module.exports = function registerCommands(bot, deps) {
     const {
         db,
@@ -25,7 +27,7 @@ module.exports = function registerCommands(bot, deps) {
     } = deps;
 
     const ADMIN_ID = 542797568;
-
+    registerKsCommand(bot, deps);
     // ---------------------------------------------------------------------
     // /start
     // ---------------------------------------------------------------------
@@ -202,67 +204,6 @@ module.exports = function registerCommands(bot, deps) {
     });
 
     // ---------------------------------------------------------------------
-    // /ks  (list user's own keys from last 45 days)
-    // ---------------------------------------------------------------------
-    bot.onText(/\/ks/, async (msg) => {
-        const chatId = msg.chat.id;
-        const userId = msg.from.id;
-
-        try {
-            // Fetch keys from the last 45 days
-            const [rows] = await db.execute(
-                `SELECT FullKey, GuiKey, ServerName, IssuedAt
-                 FROM UserKeys
-                 WHERE UserID = ?
-                   AND IssuedAt >= NOW() - INTERVAL 45 DAY
-                 ORDER BY IssuedAt DESC`,
-                [userId]
-            );
-
-            if (rows.length === 0) {
-                return bot.sendMessage(chatId, "❌ No keys found in the last 45 days.");
-            }
-
-            const escapeHTML = (text) =>
-                text.replace(/&/g, "&amp;")
-                    .replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;");
-
-            let message = `🔑 Keys for UserID: <code>${escapeHTML(String(userId))}</code> — ${rows.length} total:\n\n`;
-            let messages = [];
-            let count = 1;
-
-            for (const row of rows) {
-                const { FullKey, GuiKey, ServerName, IssuedAt } = row;
-                const exists = await KeyExists(ServerName, GuiKey);
-                const statusText = exists ? "<b>Active</b>" : "<b>Not Active</b>";
-                const issued = new Date(IssuedAt).toDateString().slice(0, 10);
-
-                const entry =
-                    `${count}. FullKey: <code>${escapeHTML(FullKey)}</code>\n` +
-                    `   IssuedAt: ${escapeHTML(issued)}\n` +
-                    `   Status: ${statusText}\n\n`;
-
-                if (message.length + entry.length > 4000) {
-                    messages.push(message);
-                    message = "";
-                }
-                message += entry;
-                count++;
-            }
-
-            if (message.length > 0) messages.push(message);
-
-            for (const part of messages) {
-                await bot.sendMessage(chatId, part, { parse_mode: "HTML" });
-            }
-        } catch (err) {
-            console.error("Error fetching keys:", err);
-            await bot.sendMessage(chatId, "⚠️ Error fetching your keys. Please try again later.");
-        }
-    });
-
-    // ---------------------------------------------------------------------
     // /userbalance <username>   (legacy ADMIN_ID check)
     // ---------------------------------------------------------------------
     bot.onText(/^\/userbalance (.+)$/, async (msg, match) => {
@@ -294,11 +235,11 @@ module.exports = function registerCommands(bot, deps) {
 
             const response =
                 `💳 Balance Info:
-	UserID: ${user.UserID}
-	FirstName: ${user.FirstName || "-"}
-	LastName: ${user.LastName || "-"}
-	Username: ${user.Username ? '@' + user.Username : "-"}
-	CurrentBalance: $${Number(user.CurrentBalance).toFixed(2)}`;
+        UserID: ${user.UserID}
+        FirstName: ${user.FirstName || "-"}
+        LastName: ${user.LastName || "-"}
+        Username: ${user.Username ? '@' + user.Username : "-"}
+        CurrentBalance: $${Number(user.CurrentBalance).toFixed(2)}`;
 
             bot.sendMessage(chatId, response);
         } catch (err) {
