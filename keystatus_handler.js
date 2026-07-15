@@ -7,18 +7,27 @@
 // Registers "/keystatus <key>" (lowercase — distinct from the existing
 // legacy "/KeyStatus" flow elsewhere in this codebase, which is untouched).
 //
+// Access: superadmin / admin / moderator ONLY (checked against the Admins
+// table, same pattern as /keyusername, /removekey, etc.). This is a
+// deliberate cross-user lookup tool — it searches every key in UserKeys
+// regardless of who owns it, not just the caller's own keys — so it must
+// stay behind the same admin gate as the other lookup commands, or any
+// user could enumerate the status/usage of a key they don't own.
+//
 // Behavior:
-//   /keystatus                -> "argument required" usage message
-//   /keystatus <outline key>  -> FullKey + Active/Not Active + Usage
-//                                (looked up in UserKeys, scoped to the
-//                                 sender's own UserID — same as /ks)
+//   /keystatus                 (non-admin) -> "not an active admin" error
+//   /keystatus                 (admin, no arg) -> "argument required"
+//   /keystatus <outline key>   -> Owner UserID + FullKey + Active/Not
+//                                 Active + Usage (looked up across ALL
+//                                 users' keys)
 //   /keystatus <wireguard key> -> "under development" message
-//   anything else              -> "no matching key found"
+//   anything else               -> "no matching key found"
 //
 // How Outline vs WireGuard is decided:
-//   1) First we check whether the argument matches a row in UserKeys for
-//      THIS user (by FullKey, or by GuiKey with/without a leading '#').
-//      A match means it's an Outline key we manage — handle it fully.
+//   1) First we check whether the argument matches ANY row in UserKeys
+//      (by FullKey, or by GuiKey with/without a leading '#'), across all
+//      users. A match means it's an Outline key we manage — handle it
+//      fully.
 //   2) If there's no DB match, we check whether the string LOOKS like a
 //      WireGuard key: a 43-44 char base64 blob ending in '=', with none
 //      of the markers an Outline key/tag would have (no "ss://", no "#").
@@ -72,21 +81,39 @@ module.exports = function registerKeyStatusCommand(bot, deps) {
 
     bot.onText(/^\/keystatus(?:\s+([\s\S]+))?$/, async (msg, match) => {
         const chatId = msg.chat.id;
-        const userId = msg.from.id;
+        const senderId = msg.from.id;
         const input = match[1] ? match[1].trim() : '';
 
-        // --- No argument supplied ---
-        if (!input) {
-            return bot.sendMessage(
-                chatId,
-                "⚠️ Usage: /keystatus <key>\nPlease provide your Outline or WireGuard key."
-            );
-        }
-
         try {
-            // --- 1) Try to resolve as one of the user's own Outline keys ---
+            // --- Admin gate: superadmin / admin / moderator only ---
+            const [adminRows] = await db.execute(
+                "SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 LIMIT 1",
+                [senderId]
+            );
+
+            if (adminRows.length === 0) {
+                await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
+                return;
+            }
+
+            const role = adminRows[0].Role;
+            if (!['superadmin', 'admin', 'moderator'].includes(role)) {
+                await bot.sendMessage(chatId, '❌ Error: You do not have permission.');
+                return;
+            }
+
+            // --- No argument supplied ---
+            if (!input) {
+                await bot.sendMessage(
+                    chatId,
+                    "⚠️ Usage: /keystatus <key>\nPlease provide an Outline or WireGuard key."
+                );
+                return;
+            }
+
+            // --- 1) Try to resolve as an Outline key belonging to ANY user ---
             //
-            // We fetch all of this user's keys and compare normalized tokens
+            // We fetch every key in the table and compare normalized tokens
             // in JS rather than doing an exact SQL match, because FullKey/
             // GuiKey carry a decorative " <flag emoji>" suffix that a pasted
             // key/tag will never include (see normalizeKeyToken above).
@@ -95,10 +122,8 @@ module.exports = function registerKeyStatusCommand(bot, deps) {
             const normalizedAltGui = normalizeKeyToken(altGui);
 
             const [allKeys] = await db.execute(
-                `SELECT FullKey, GuiKey, ServerName, IssuedAt
-                 FROM UserKeys
-                 WHERE UserID = ?`,
-                [userId]
+                `SELECT UserID, FullKey, GuiKey, ServerName, IssuedAt
+                 FROM UserKeys`
             );
 
             const rows = allKeys.filter(row => {
@@ -110,7 +135,7 @@ module.exports = function registerKeyStatusCommand(bot, deps) {
             });
 
             if (rows.length > 0) {
-                const { FullKey, GuiKey, ServerName } = rows[0];
+                const { UserID, FullKey, GuiKey, ServerName } = rows[0];
 
                 const exists = await KeyExists(ServerName, GuiKey);
                 const statusText = exists ? "<b>Active</b>" : "<b>Not Active</b>";
@@ -129,20 +154,23 @@ module.exports = function registerKeyStatusCommand(bot, deps) {
                 }
 
                 const message =
+                    `👤 Owner UserID: <code>${escapeHtml(String(UserID))}</code>\n` +
                     `🔑 Key: <code>${escapeHtml(FullKey)}</code>\n` +
                     `Status: ${statusText}\n` +
                     `Usage: ${escapeHtml(usageText)}`;
 
-                return bot.sendMessage(chatId, message, { parse_mode: "HTML" });
+                await bot.sendMessage(chatId, message, { parse_mode: "HTML" });
+                return;
             }
 
             // --- 2) Not an Outline key we manage — does it look like WireGuard? ---
             if (looksLikeWireGuardKey(input)) {
-                return bot.sendMessage(chatId, "🚧 WireGuard key status is under development.");
+                await bot.sendMessage(chatId, "🚧 WireGuard key status is under development.");
+                return;
             }
 
             // --- 3) Neither matched nor recognized ---
-            return bot.sendMessage(chatId, "❌ No matching key found. Please check the key and try again.");
+            await bot.sendMessage(chatId, "❌ No matching key found. Please check the key and try again.");
 
         } catch (err) {
             console.error("/keystatus error:", err);
