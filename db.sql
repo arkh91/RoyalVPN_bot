@@ -87,3 +87,13 @@ CREATE TABLE vpn_servers (
     INDEX idx_alias (ServerAlias)
 );
 
+CREATE TABLE admins (
+    AdminID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    UserID BIGINT UNSIGNED NOT NULL,
+    Username VARCHAR(255) DEFAULT NULL,
+    Role ENUM('superadmin', 'admin', 'moderator') DEFAULT 'admin',
+    AddedAt TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+    IsActive TINYINT(1) DEFAULT 1,
+    PRIMARY KEY (AdminID),
+    UNIQUE KEY (UserID)
+);
