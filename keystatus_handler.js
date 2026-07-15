@@ -52,6 +52,21 @@ function escapeHtml(text) {
         .replace(/>/g, '&gt;');
 }
 
+// Usage:
+//   normalizeKeyToken('#Ger27_07142026_150423 🇩🇪') -> '#Ger27_07142026_150423'
+//   normalizeKeyToken('ss://...@host:22627#Ger27_07142026_150423 🇩🇪')
+//     -> 'ss://...@host:22627#Ger27_07142026_150423'
+//
+// FullKey/GuiKey are stored with a decorative " <flag emoji>" suffix
+// appended at key-creation time (e.g. " 🇩🇪" for Germany). That suffix
+// is never what a user pastes back in, so an exact SQL match against
+// the raw column silently fails. The real identifier is always
+// everything before the first whitespace — so we compare on that
+// token instead of the raw stored string.
+function normalizeKeyToken(value) {
+    return String(value).trim().split(/\s+/)[0];
+}
+
 module.exports = function registerKeyStatusCommand(bot, deps) {
     const { db, KeyExists, SERVERS, axios, https } = deps;
 
@@ -70,16 +85,29 @@ module.exports = function registerKeyStatusCommand(bot, deps) {
 
         try {
             // --- 1) Try to resolve as one of the user's own Outline keys ---
+            //
+            // We fetch all of this user's keys and compare normalized tokens
+            // in JS rather than doing an exact SQL match, because FullKey/
+            // GuiKey carry a decorative " <flag emoji>" suffix that a pasted
+            // key/tag will never include (see normalizeKeyToken above).
             const altGui = input.startsWith('#') ? input.substring(1).trim() : ('#' + input);
+            const normalizedInput = normalizeKeyToken(input);
+            const normalizedAltGui = normalizeKeyToken(altGui);
 
-            const [rows] = await db.execute(
+            const [allKeys] = await db.execute(
                 `SELECT FullKey, GuiKey, ServerName, IssuedAt
                  FROM UserKeys
-                 WHERE UserID = ?
-                   AND (FullKey = ? OR GuiKey = ? OR GuiKey = ?)
-                 LIMIT 1`,
-                [userId, input, input, altGui]
+                 WHERE UserID = ?`,
+                [userId]
             );
+
+            const rows = allKeys.filter(row => {
+                const fullTok = normalizeKeyToken(row.FullKey);
+                const guiTok = normalizeKeyToken(row.GuiKey);
+                return fullTok === normalizedInput
+                    || guiTok === normalizedInput
+                    || guiTok === normalizedAltGui;
+            });
 
             if (rows.length > 0) {
                 const { FullKey, GuiKey, ServerName } = rows[0];
