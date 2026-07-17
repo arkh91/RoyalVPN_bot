@@ -28,6 +28,8 @@ const KeyExists = require('./db/keyExists');
 const SERVERS = require('./servers'); //removekey command
 const https = require('https'); //removekey command
 const registerCommands = require('./commands'); // 👈 all bot.onText command handlers live here now
+const registerAdminCommand = require('./command_Admin');
+const registerBroadcastCommand = require('./broadcast_handler');
 
 let callbackToServer = {};
 let callbackToInternationalServer = {};
@@ -352,6 +354,8 @@ registerCommands(bot, {
     mainMenu,
     waitingForKey
 });
+registerAdminCommand(bot, { db });
+registerBroadcastCommand(bot, { db });
 
 
 bot.on('callback_query', async (query) => {
