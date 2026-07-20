@@ -31,6 +31,7 @@ module.exports = function registerCommands(bot, deps) {
     const ADMIN_ID = 542797568;
     registerKsCommand(bot, deps);
     registerKeyStatusCommand(bot, deps);
+//    registerAdminCommand(bot, { db });
     // ---------------------------------------------------------------------
     // /start
     // ---------------------------------------------------------------------
@@ -205,76 +206,22 @@ module.exports = function registerCommands(bot, deps) {
             { parse_mode: 'MarkdownV2' }
         );
     });
-/*
-    // ---------------------------------------------------------------------
-    // /ks  (list user's own keys from last 45 days)
-    // ---------------------------------------------------------------------
-    bot.onText(/\/ks/, async (msg) => {
-        const chatId = msg.chat.id;
-        const userId = msg.from.id;
 
-        try {
-            // Fetch keys from the last 45 days
-            const [rows] = await db.execute(
-                `SELECT FullKey, GuiKey, ServerName, IssuedAt
-                 FROM UserKeys
-                 WHERE UserID = ?
-                   AND IssuedAt >= NOW() - INTERVAL 45 DAY
-                 ORDER BY IssuedAt DESC`,
-                [userId]
-            );
-
-            if (rows.length === 0) {
-                return bot.sendMessage(chatId, "❌ No keys found in the last 45 days.");
-            }
-
-            const escapeHTML = (text) =>
-                text.replace(/&/g, "&amp;")
-                    .replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;");
-
-            let message = `🔑 Keys for UserID: <code>${escapeHTML(String(userId))}</code> — ${rows.length} total:\n\n`;
-            let messages = [];
-            let count = 1;
-
-            for (const row of rows) {
-                const { FullKey, GuiKey, ServerName, IssuedAt } = row;
-                const exists = await KeyExists(ServerName, GuiKey);
-                const statusText = exists ? "<b>Active</b>" : "<b>Not Active</b>";
-                const issued = new Date(IssuedAt).toDateString().slice(0, 10);
-
-                const entry =
-                    `${count}. FullKey: <code>${escapeHTML(FullKey)}</code>\n` +
-                    `   IssuedAt: ${escapeHTML(issued)}\n` +
-                    `   Status: ${statusText}\n\n`;
-
-                if (message.length + entry.length > 4000) {
-                    messages.push(message);
-                    message = "";
-                }
-                message += entry;
-                count++;
-            }
-
-            if (message.length > 0) messages.push(message);
-
-            for (const part of messages) {
-                await bot.sendMessage(chatId, part, { parse_mode: "HTML" });
-            }
-        } catch (err) {
-            console.error("Error fetching keys:", err);
-            await bot.sendMessage(chatId, "⚠️ Error fetching your keys. Please try again later.");
-        }
-    });
-*/
-    // ---------------------------------------------------------------------
-    // /userbalance <username>   (legacy ADMIN_ID check)
+// ---------------------------------------------------------------------
+    // /userbalance <username>   (superadmin/admin only)
     // ---------------------------------------------------------------------
     bot.onText(/^\/userbalance (.+)$/, async (msg, match) => {
         const chatId = msg.chat.id;
+        const senderId = msg.from.id;
 
-        if (msg.from.id !== ADMIN_ID) {
-            bot.sendMessage(chatId, '❌ Error: No admin detected!');
+        // --- superadmin / admin gate (moderator excluded) ---
+        const [adminRows] = await db.execute(
+            'SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 LIMIT 1',
+            [senderId]
+        );
+
+        if (adminRows.length === 0 || !['superadmin', 'admin'].includes(adminRows[0].Role)) {
+            await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
             return;
         }
 
