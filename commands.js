@@ -496,7 +496,7 @@ module.exports = function registerCommands(bot, deps) {
                 'Pending',
                 'Pending via TelegramBot',
                 orderId,
-                paymentId,
+               paymentId,
                 invoiceId
             ];
             await db.query(insertQuery, insertParams);
@@ -564,10 +564,7 @@ module.exports = function registerCommands(bot, deps) {
         }
     });
 
-    // ---------------------------------------------------------------------
-    // /keyusername <username>   (admin only)
-    // ---------------------------------------------------------------------
-    bot.onText(/\/keyusername\s+@?([A-Za-z0-9_]+)/i, async (msg, match) => {
+bot.onText(/\/keyusername\s+@?([A-Za-z0-9_]+)/i, async (msg, match) => {
         const chatId = msg.chat.id;
         const senderId = msg.from.id;
         const targetUsername = match[1].trim();
@@ -577,7 +574,6 @@ module.exports = function registerCommands(bot, deps) {
                 'SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 LIMIT 1',
                 [senderId]
             );
-
             if (adminRows.length === 0) {
                 await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
                 return;
@@ -592,18 +588,19 @@ module.exports = function registerCommands(bot, deps) {
                 'SELECT UserID FROM accounts WHERE Username = ? LIMIT 1',
                 [targetUsername]
             );
-
             if (accRows.length === 0) {
                 await bot.sendMessage(chatId, `❌ No account found with username @${targetUsername}`);
                 return;
             }
             const userId = accRows[0].UserID;
 
+            // Now also pulling GuiKey + ServerName so we can look up
+            // Usage/Limit (or Expired) for each key, same as /ks and
+            // /servercheck do.
             const [keyRows] = await db.execute(
-                'SELECT FullKey, IssuedAt FROM UserKeys WHERE UserID = ? ORDER BY IssuedAt DESC',
+                'SELECT FullKey, GuiKey, ServerName, IssuedAt FROM UserKeys WHERE UserID = ? ORDER BY IssuedAt DESC',
                 [userId]
             );
-
             if (keyRows.length === 0) {
                 await bot.sendMessage(chatId, `ℹ️ No keys found for @${targetUsername}`);
                 return;
@@ -611,17 +608,44 @@ module.exports = function registerCommands(bot, deps) {
 
             const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+            // Usage cache: one getKeysUsage() round-trip PER SERVER, no
+            // matter how many of this user's keys are on that server —
+            // same pattern as /ks's getUsageMapCached.
+            const usageCache = {};
+            const getUsageMapCached = async (serverName) => {
+                if (!usageCache[serverName]) {
+                    try {
+                        usageCache[serverName] = await getKeysUsage(serverName, SERVERS, axios, https);
+                    } catch (err) {
+                        console.error(`Usage fetch failed for ${serverName}:`, err.message);
+                        usageCache[serverName] = new Map();
+                    }
+                }
+                return usageCache[serverName];
+            };
+
             const LIMIT = 50;
             let response = `🔑 Keys for @${targetUsername} (UserID: ${userId}) — ${keyRows.length} total:\n\n`;
-            keyRows.slice(0, LIMIT).forEach((row, i) => {
-                response += `${i + 1}. FullKey: <code>${escapeHtml(row.FullKey)}</code>\n   IssuedAt: ${escapeHtml(row.IssuedAt)}\n\n`;
-            });
+
+            for (const [i, row] of keyRows.slice(0, LIMIT).entries()) {
+                const { FullKey, GuiKey, ServerName, IssuedAt } = row;
+
+                const usageMap = await getUsageMapCached(ServerName);
+                const info = usageMap.get((GuiKey || '').trim());
+                const usageText = info
+                    ? (info.limitBytes
+                        ? `${formatBytes(info.bytes)}/${formatBytes(info.limitBytes)}`
+                        : `${formatBytes(info.bytes)} (no limit)`)
+                    : 'Expired';
+
+                response += `${i + 1}. FullKey: <code>${escapeHtml(FullKey)}</code>\n   IssuedAt: ${escapeHtml(IssuedAt)}\n   Usage: ${escapeHtml(usageText)}\n\n`;
+            }
+
             if (keyRows.length > LIMIT) {
                 response += `...(showing ${LIMIT} of ${keyRows.length}). For the full list, query the DB directly.`;
             }
 
             await bot.sendMessage(chatId, response, { parse_mode: 'HTML', disable_web_page_preview: true });
-
         } catch (err) {
             console.error('Keyusername error:', err);
             await bot.sendMessage(chatId, `❌ Database error: ${err.code || err.message}`);
