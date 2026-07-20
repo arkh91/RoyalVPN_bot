@@ -41,15 +41,28 @@ function sleep(ms) {
 }
 
 // Usage:
-//   describeRecipient(row) -> 'John Doe (`123456789`) - @johnd'
-//   describeRecipient(row) -> 'John Doe (`123456789`) - No Username'
+//   describeRecipient(row) -> 'John Doe 123456789 && @johnd'
+//   describeRecipient(row) -> 'John Doe 123456789 && No Username'
 //
-// Formats one failed recipient's line for the end-of-broadcast summary,
-// so admins can identify exactly who didn't receive the message.
+// Formats one recipient's line for the end-of-broadcast summary messages,
+// so admins can identify exactly who did/didn't receive the message.
 function describeRecipient(row) {
     const fullName = `${row.FirstName || ''} ${row.LastName || ''}`.trim() || 'Unknown Name';
     const usernamePart = row.Username ? `@${row.Username}` : 'No Username';
-    return `${fullName} (UserID: ${row.UserID}) - ${usernamePart}`;
+    return `${fullName} ${row.UserID} && ${usernamePart}`;
+}
+
+// Usage:
+//   await sendInChunks(bot, chatId, longText)
+//
+// Telegram messages cap out around 4096 chars. This splits a long summary
+// (e.g. hundreds of failed-recipient lines) into multiple messages instead
+// of one call that would be rejected by the API.
+async function sendInChunks(bot, chatId, text) {
+    const CHUNK_SIZE = 3500;
+    for (let i = 0; i < text.length; i += CHUNK_SIZE) {
+        await bot.sendMessage(chatId, text.slice(i, i + CHUNK_SIZE));
+    }
 }
 
 module.exports = function registerBroadcastCommand(bot, deps) {
@@ -88,13 +101,13 @@ module.exports = function registerBroadcastCommand(bot, deps) {
 
             await bot.sendMessage(chatId, `📣 Starting broadcast to ${recipients.length} user(s)...`);
 
-            let successCount = 0;
+            let successes = [];
             const failures = [];
 
             for (const recipient of recipients) {
                 try {
                     await bot.sendMessage(recipient.UserID, messageText);
-                    successCount++;
+                    successes.push(recipient);
                 } catch (err) {
                     failures.push(recipient);
                     console.error(`Broadcast failed for UserID ${recipient.UserID}:`, err.message);
@@ -103,19 +116,19 @@ module.exports = function registerBroadcastCommand(bot, deps) {
                 await sleep(SEND_DELAY_MS);
             }
 
-            // --- Final summary back to the admin who ran the command ---
-            let summary = `✅ Broadcast complete.\nSent: ${successCount}/${recipients.length}\nFailed: ${failures.length}`;
+            // --- Two separate summary messages back to the admin ---
+            const successMessage =
+                `✅ Broadcast complete.\n` +
+                `Successfully sent ${successes.length}/${recipients.length}\n\n` +
+                successes.map(describeRecipient).join('\n');
 
-            if (failures.length > 0) {
-                summary += `\n\n❌ Failed recipients:\n` + failures.map(describeRecipient).join('\n');
-            }
+            const failureMessage =
+                `❌ Failed recipients:\n` +
+                `Failed ${failures.length}/${recipients.length}\n\n` +
+                failures.map(describeRecipient).join('\n');
 
-            // Telegram messages cap out around 4096 chars — split the
-            // summary into chunks if a lot of sends failed.
-            const CHUNK_SIZE = 3500;
-            for (let i = 0; i < summary.length; i += CHUNK_SIZE) {
-                await bot.sendMessage(chatId, summary.slice(i, i + CHUNK_SIZE));
-            }
+            await sendInChunks(bot, chatId, successMessage);
+            await sendInChunks(bot, chatId, failureMessage);
 
         } catch (err) {
             console.error('/broadcast error:', err);
