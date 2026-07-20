@@ -27,9 +27,10 @@ const getNowPaymentsInvoiceStatus = require('./getNowPaymentsInvoiceStatus');
 const KeyExists = require('./db/keyExists');
 const SERVERS = require('./servers'); //removekey command
 const https = require('https'); //removekey command
-const registerCommands = require('./commands'); // 👈 all bot.onText command handlers live here now
+const registerCommands = require('./commands');
 const registerAdminCommand = require('./command_Admin');
 const registerBroadcastCommand = require('./broadcast_handler');
+const registerServerCheckCommand = require('./servercheck_handler');
 
 let callbackToServer = {};
 let callbackToInternationalServer = {};
@@ -356,7 +357,7 @@ registerCommands(bot, {
 });
 registerAdminCommand(bot, { db });
 registerBroadcastCommand(bot, { db });
-
+registerServerCheckCommand(bot, { db, SERVERS, axios, https });
 
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
