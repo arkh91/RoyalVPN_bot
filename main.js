@@ -31,6 +31,7 @@ const registerCommands = require('./commands');
 const registerAdminCommand = require('./command_Admin');
 const registerBroadcastCommand = require('./broadcast_handler');
 const registerServerCheckCommand = require('./servercheck_handler');
+const registerUsageWarningCommand = require('./usagewarning_handler');
 
 let callbackToServer = {};
 let callbackToInternationalServer = {};
@@ -263,12 +264,12 @@ const subMenus = {
         text: 'Select the 30-day Outline bandwidth limit:',
         reply_markup: {
             inline_keyboard: [
-                [{ text: '20 GB / 0.99 USD', callback_data: 'bw_20' }],
-                [{ text: '40 GB / 1.19 USD', callback_data: 'bw_40' }],
-                [{ text: '50 GB / 1.29 USD', callback_data: 'bw_50' }],
-                [{ text: '70 GB / 1.79 USD', callback_data: 'bw_70' }],
-                [{ text: '100 GB / 2.29 USD', callback_data: 'bw_100' }],
-                [{ text: '300 GB / 5.49 USD', callback_data: 'bw_300' }],
+                [{ text: '20 GB / 1.99 USD', callback_data: 'bw_20' }],
+                [{ text: '40 GB / 2.19 USD', callback_data: 'bw_40' }],
+                [{ text: '50 GB / 2.29 USD', callback_data: 'bw_50' }],
+                [{ text: '70 GB / 2.79 USD', callback_data: 'bw_70' }],
+                [{ text: '100 GB / 3.29 USD', callback_data: 'bw_100' }],
+                [{ text: '300 GB / 6.49 USD', callback_data: 'bw_300' }],
                 //[{ text: '500 GB / 9.30 USD', callback_data: 'bw_500' }],
                 //[{ text: '1000 GB / 16.99 USD', callback_data: 'bw_1000' }],
                 [{ text: '⬅️ Go Back', callback_data: 'sub_1_speed' }]
@@ -358,6 +359,7 @@ registerCommands(bot, {
 registerAdminCommand(bot, { db });
 registerBroadcastCommand(bot, { db });
 registerServerCheckCommand(bot, { db, SERVERS, axios, https });
+registerUsageWarningCommand(bot, { db, SERVERS, axios, https });
 
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
@@ -474,14 +476,14 @@ bot.on('callback_query', async (query) => {
                 const bandwidthGb = parseInt(data.replace(isInternational ? 'int_bw_' : 'bw_', ''), 10);
 
         const bandwidthPrices = {
-                20: 0.99,
-                40: 1.19,
-                50: 1.29,
-                70: 1.79,
-                100: 2.29,
-                300: 5.49,
-                500: 9.30,
-                1000: 16.99
+                20: 1.99,
+                40: 2.19,
+                50: 2.29,
+                70: 2.79,
+                100: 3.29,
+                300: 6.49,
+                500: 10.30,
+                1000: 17.99
         };
 
         const requiredAmount = bandwidthPrices[bandwidthGb];
