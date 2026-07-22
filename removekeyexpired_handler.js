@@ -25,6 +25,21 @@
 //     you still want billing/usage records for).
 //   - If the key is already gone from the server, that's reported as
 //     informational, not an error — there's nothing to remove.
+// Usage:
+//   normalizeKeyToken('#Ger27_07142026_150423 🇩🇪') -> '#Ger27_07142026_150423'
+//   normalizeKeyToken('ss://...@host:22627#Ger27_07142026_150423 🇩🇪')
+//     -> 'ss://...@host:22627#Ger27_07142026_150423'
+//
+// FullKey/GuiKey are stored with a decorative " <flag emoji>" suffix
+// appended at key-creation time (e.g. " 🇩🇪" for Germany). That suffix
+// is never what an admin pastes back in, so an exact SQL match against
+// the raw column silently fails. The real identifier is always
+// everything before the first whitespace — so we compare on that
+// token instead of the raw stored string. Same fix as keystatus_handler.js.
+function normalizeKeyToken(value) {
+    return String(value).trim().split(/\s+/)[0];
+}
+
 module.exports = function registerRemoveKeyExpiredCommand(bot, deps) {
     const { db, SERVERS, axios, https } = deps;
 
@@ -45,18 +60,20 @@ module.exports = function registerRemoveKeyExpiredCommand(bot, deps) {
             }
 
             const altGui = input.startsWith('#') ? input.substring(1).trim() : ('#' + input);
+            const normalizedInput = normalizeKeyToken(input);
+            const normalizedAltGui = normalizeKeyToken(altGui);
 
-            let [rows] = await db.execute(
-                "SELECT FullKey, GuiKey, ServerName FROM UserKeys WHERE GuiKey = ? OR GuiKey = ? LIMIT 1",
-                [input, altGui]
+            const [allKeys] = await db.execute(
+                'SELECT FullKey, GuiKey, ServerName FROM UserKeys'
             );
 
-            if (!rows || rows.length === 0) {
-                [rows] = await db.execute(
-                    "SELECT FullKey, GuiKey, ServerName FROM UserKeys WHERE FullKey = ? LIMIT 1",
-                    [input]
-                );
-            }
+            const rows = allKeys.filter(row => {
+                const fullTok = normalizeKeyToken(row.FullKey);
+                const guiTok = normalizeKeyToken(row.GuiKey);
+                return fullTok === normalizedInput
+                    || guiTok === normalizedInput
+                    || guiTok === normalizedAltGui;
+            });
 
             if (!rows || rows.length === 0) {
                 await bot.sendMessage(chatId, `❌ No key found with GuiKey or FullKey: ${input}`);
