@@ -563,8 +563,12 @@ module.exports = function registerCommands(bot, deps) {
             bot.sendMessage(chatId, `❌ Failed to send message to ${userId}`);
         }
     });
-
-bot.onText(/\/keyusername\s+@?([A-Za-z0-9_]+)/i, async (msg, match) => {
+/*
+    // ---------------------------------------------------------------------
+    // /keyusername <username>   (admin only)
+    // ---------------------------------------------------------------------
+*/
+    bot.onText(/\/keyusername\s+@?([A-Za-z0-9_]+)/i, async (msg, match) => {
         const chatId = msg.chat.id;
         const senderId = msg.from.id;
         const targetUsername = match[1].trim();
@@ -594,9 +598,6 @@ bot.onText(/\/keyusername\s+@?([A-Za-z0-9_]+)/i, async (msg, match) => {
             }
             const userId = accRows[0].UserID;
 
-            // Now also pulling GuiKey + ServerName so we can look up
-            // Usage/Limit (or Expired) for each key, same as /ks and
-            // /servercheck do.
             const [keyRows] = await db.execute(
                 'SELECT FullKey, GuiKey, ServerName, IssuedAt FROM UserKeys WHERE UserID = ? ORDER BY IssuedAt DESC',
                 [userId]
@@ -609,8 +610,7 @@ bot.onText(/\/keyusername\s+@?([A-Za-z0-9_]+)/i, async (msg, match) => {
             const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
             // Usage cache: one getKeysUsage() round-trip PER SERVER, no
-            // matter how many of this user's keys are on that server —
-            // same pattern as /ks's getUsageMapCached.
+            // matter how many of this user's keys are on that server.
             const usageCache = {};
             const getUsageMapCached = async (serverName) => {
                 if (!usageCache[serverName]) {
@@ -624,31 +624,59 @@ bot.onText(/\/keyusername\s+@?([A-Za-z0-9_]+)/i, async (msg, match) => {
                 return usageCache[serverName];
             };
 
-            const LIMIT = 50;
-            let response = `🔑 Keys for @${targetUsername} (UserID: ${userId}) — ${keyRows.length} total:\n\n`;
-
-            for (const [i, row] of keyRows.slice(0, LIMIT).entries()) {
+            // --- Enrich every key with its active/expired status + usage
+            // FIRST, since "still active" can only be known after checking
+            // the server's usage map — the DB alone can't tell us that.
+            const enriched = [];
+            for (const row of keyRows) {
                 const { FullKey, GuiKey, ServerName, IssuedAt } = row;
-
                 const usageMap = await getUsageMapCached(ServerName);
                 const info = usageMap.get((GuiKey || '').trim());
+                const isActive = !!info;
                 const usageText = info
                     ? (info.limitBytes
                         ? `${formatBytes(info.bytes)}/${formatBytes(info.limitBytes)}`
                         : `${formatBytes(info.bytes)} (no limit)`)
                     : 'Expired';
-
-                response += `${i + 1}. FullKey: <code>${escapeHtml(FullKey)}</code>\n   IssuedAt: ${escapeHtml(IssuedAt)}\n   Usage: ${escapeHtml(usageText)}\n\n`;
+                enriched.push({ FullKey, IssuedAt, isActive, usageText });
             }
 
-            if (keyRows.length > LIMIT) {
-                response += `...(showing ${LIMIT} of ${keyRows.length}). For the full list, query the DB directly.`;
+            // --- Keep a key only if it's within the last 60 days, OR it's
+            // still active on the server regardless of age.
+            const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+            const filtered = enriched.filter(k => k.isActive || new Date(k.IssuedAt) >= sixtyDaysAgo);
+
+            if (filtered.length === 0) {
+                await bot.sendMessage(chatId, `ℹ️ No keys within the last 60 days or still active for @${targetUsername}`);
+                return;
             }
 
-            await bot.sendMessage(chatId, response, { parse_mode: 'HTML', disable_web_page_preview: true });
+            const LIMIT = 50;
+            let messages = [];
+            let response = `🔑 Keys for @${targetUsername} (UserID: ${userId}) — ${filtered.length} total:\n\n`;
+
+            filtered.slice(0, LIMIT).forEach((k, i) => {
+                const entry = `${i + 1}. FullKey: <code>${escapeHtml(k.FullKey)}</code>\n   IssuedAt: ${escapeHtml(k.IssuedAt)}\n   Usage: ${escapeHtml(k.usageText)}\n\n`;
+
+                if (response.length + entry.length > 3500) {
+                    messages.push(response);
+                    response = "";
+                }
+                response += entry;
+            });
+
+            if (filtered.length > LIMIT) {
+                response += `...(showing ${LIMIT} of ${filtered.length}). For the full list, query the DB directly.`;
+            }
+
+            if (response.length > 0) messages.push(response);
+
+            for (const part of messages) {
+                await bot.sendMessage(chatId, part, { parse_mode: 'HTML', disable_web_page_preview: true });
+            }
         } catch (err) {
             console.error('Keyusername error:', err);
-            await bot.sendMessage(chatId, `❌ Database error: ${err.code || err.message}`);
+            await bot.sendMessage(chatId, `❌ Error: ${err.code || err.message}`);
         }
     });
 
@@ -693,7 +721,7 @@ bot.onText(/\/keyusername\s+@?([A-Za-z0-9_]+)/i, async (msg, match) => {
             }
 
             const [keyRows] = await db.execute(
-                `SELECT FullKey, IssuedAt
+                `SELECT FullKey, GuiKey, ServerName, IssuedAt
                  FROM UserKeys
                  WHERE UserID = ? AND IssuedAt >= NOW() - INTERVAL 31 DAY
                  ORDER BY IssuedAt DESC`,
@@ -707,16 +735,53 @@ bot.onText(/\/keyusername\s+@?([A-Za-z0-9_]+)/i, async (msg, match) => {
 
             const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-            let response = `📅 Keys issued in last 31 days for ${target} (UserID: ${userId}):\n\n`;
-            keyRows.forEach((row, i) => {
-                response += `${i + 1}. FullKey: <code>${escapeHtml(row.FullKey)}</code>\n   IssuedAt: ${escapeHtml(row.IssuedAt)}\n\n`;
-            });
+            // Usage cache: one getKeysUsage() round-trip PER SERVER, no
+            // matter how many of this user's keys are on that server.
+            const usageCache = {};
+            const getUsageMapCached = async (serverName) => {
+                if (!usageCache[serverName]) {
+                    try {
+                        usageCache[serverName] = await getKeysUsage(serverName, SERVERS, axios, https);
+                    } catch (err) {
+                        console.error(`Usage fetch failed for ${serverName}:`, err.message);
+                        usageCache[serverName] = new Map();
+                    }
+                }
+                return usageCache[serverName];
+            };
 
-            await bot.sendMessage(chatId, response, { parse_mode: 'HTML' });
+            let messages = [];
+            let response = `📅 Keys issued in last 31 days for ${target} (UserID: ${userId}):\n\n`;
+
+            for (const [i, row] of keyRows.entries()) {
+                const { FullKey, GuiKey, ServerName, IssuedAt } = row;
+
+                const usageMap = await getUsageMapCached(ServerName);
+                const info = usageMap.get((GuiKey || '').trim());
+                const usageText = info
+                    ? (info.limitBytes
+                        ? `${formatBytes(info.bytes)}/${formatBytes(info.limitBytes)}`
+                        : `${formatBytes(info.bytes)} (no limit)`)
+                    : 'Expired';
+
+                const entry = `${i + 1}. FullKey: <code>${escapeHtml(FullKey)}</code>\n   IssuedAt: ${escapeHtml(IssuedAt)}\n   Usage: ${escapeHtml(usageText)}\n\n`;
+
+                if (response.length + entry.length > 3500) {
+                    messages.push(response);
+                    response = "";
+                }
+                response += entry;
+            }
+
+            if (response.length > 0) messages.push(response);
+
+            for (const part of messages) {
+                await bot.sendMessage(chatId, part, { parse_mode: 'HTML' });
+            }
 
         } catch (err) {
             console.error('keyuserid error:', err);
-            await bot.sendMessage(chatId, `❌ Database error: ${err.code || err.message}`);
+            await bot.sendMessage(chatId, `❌ Error: ${err.code || err.message}`);
         }
     });
 
