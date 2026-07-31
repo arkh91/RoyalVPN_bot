@@ -140,7 +140,7 @@ module.exports = function registerKeyStatusCommand(bot, deps) {
                 const exists = await KeyExists(ServerName, GuiKey);
                 const statusText = exists ? "<b>Active</b>" : "<b>Not Active</b>";
 
-                let usageText = "N/A";
+                let usageText = "Unknown (server unreachable)";
                 try {
                     const usageMap = await getKeysUsage(ServerName, SERVERS, axios, https);
                     const info = usageMap.get(GuiKey.trim());
@@ -148,7 +148,7 @@ module.exports = function registerKeyStatusCommand(bot, deps) {
                         ? (info.limitBytes
                             ? `${formatBytes(info.bytes)} / ${formatBytes(info.limitBytes)}`
                             : `${formatBytes(info.bytes)} (no limit)`)
-                        : "N/A";
+                        : "<b>Expired</b>";
                 } catch (err) {
                     console.error(`Usage fetch failed for ${ServerName}:`, err.message);
                 }
@@ -157,7 +157,7 @@ module.exports = function registerKeyStatusCommand(bot, deps) {
                     `👤 Owner UserID: <code>${escapeHtml(String(UserID))}</code>\n` +
                     `🔑 Key: <code>${escapeHtml(FullKey)}</code>\n` +
                     `Status: ${statusText}\n` +
-                    `Usage: ${escapeHtml(usageText)}`;
+                    `Usage: ${usageText}`;
 
                 await bot.sendMessage(chatId, message, { parse_mode: "HTML" });
                 return;
