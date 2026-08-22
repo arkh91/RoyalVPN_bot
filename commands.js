@@ -243,16 +243,26 @@ module.exports = function registerCommands(bot, deps) {
             }
 
             const user = results[0];
-
+/*
             const response =
                 `💳 Balance Info:
-        UserID: ${user.UserID}
+        UserID: \${user.UserID}\
         FirstName: ${user.FirstName || "-"}
         LastName: ${user.LastName || "-"}
         Username: ${user.Username ? '@' + user.Username : "-"}
         CurrentBalance: $${Number(user.CurrentBalance).toFixed(2)}`;
 
             bot.sendMessage(chatId, response);
+*/
+            const response =
+                `💳 *Balance Info:*\n` +
+                `UserID: \`${user.UserID}\`\n` +
+                `FirstName: ${user.FirstName || "-"}\n` +
+                `LastName: ${user.LastName || "-"}\n` +
+                `Username: ${user.Username ? '@' + user.Username : "-"}\n` +
+                `CurrentBalance: $${Number(user.CurrentBalance).toFixed(2)}`;
+
+            bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
         } catch (err) {
             console.error("DB Error:", err);
             bot.sendMessage(chatId, "❌ Database error.");
@@ -302,19 +312,23 @@ module.exports = function registerCommands(bot, deps) {
 
             const user = results[0];
 
+            // HTML instead of Markdown — a username containing _ * ` [
+            // would break Markdown V1 parsing outright (that's what was
+            // happening here: "parastoo_dhr" has an unpaired underscore).
+            const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
             const message =
-`👤 *User Information*
+                `👤 <b>User Information</b>
 
-🆔 *User ID:* \`${user.UserID}\`
-🔖 *Username:* ${user.Username ? '@' + user.Username : "-"}
-📛 *Full Name:* ${user.FirstName || "-"} ${user.LastName || "-"}
-💰 *Balance:* $${Number(user.CurrentBalance).toFixed(2)}`;
+                🆔 <b>User ID:</b> <code>${user.UserID}</code>
+                🔖 <b>Username:</b> ${user.Username ? '@' + escapeHtml(user.Username) : "-"}
+                📛 <b>Full Name:</b> ${escapeHtml(user.FirstName || "-")} ${escapeHtml(user.LastName || "-")}
+                💰 <b>Balance:</b> $${Number(user.CurrentBalance).toFixed(2)}`;
 
-            await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-
+            await bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
         } catch (err) {
-            console.error("DB Error:", err);
-            bot.sendMessage(chatId, "❌ Database error.");
+            console.error("Error:", err);
+            bot.sendMessage(chatId, `❌ Error: ${err.code || err.message}`);
         }
     });
 
@@ -1130,7 +1144,7 @@ module.exports = function registerCommands(bot, deps) {
                 await bot.sendMessage(chatId, '❌ Error: You do not have permission.');
                 return;
             }
-
+        /*
             const commandKeyboard = {
                 reply_markup: {
                     keyboard: [
@@ -1143,7 +1157,24 @@ module.exports = function registerCommands(bot, deps) {
                         ["/sendMessage"],
                         ["/keyusername"],
                         ["/keyuserid"],
-                        ["/removekey"]
+                        ["/removekey"],
+                        ["/removekeyexpired"],
+                        ["/sc"]
+                    ],
+                    resize_keyboard: true,
+                    one_time_keyboard: true
+                }
+            };
+*/
+            const commandKeyboard = {
+                reply_markup: {
+                    keyboard: [
+                        ["/expiredkeys", "/expiredkeysnotify"],
+                        ["/useridADDbalance", "/usernameADDbalance"],
+                        ["/userbalanceuserID", "/userbalance"],
+                        ["/sendMessage", "/keyusername"],
+                        ["/keyuserid", "/removekey"],
+                        ["/removekeyexpired", "/sc"]
                     ],
                     resize_keyboard: true,
                     one_time_keyboard: true
