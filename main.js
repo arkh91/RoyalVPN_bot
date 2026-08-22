@@ -32,6 +32,13 @@ const registerAdminCommand = require('./command_Admin');
 const registerBroadcastCommand = require('./broadcast_handler');
 const registerServerCheckCommand = require('./servercheck_handler');
 const registerUsageWarningCommand = require('./usagewarning_handler');
+const registerRemoveKeyExpiredCommand = require('./removekeyexpired_handler');
+const registerListUsersCommand = require('./listusers_handler');
+const registerUsageWarningInfoCommand = require('./usagewarninginfo_handler');
+const registerCheckBalanceCommand = require('./checkbalance_handler');
+const registerUserIdUpdateBalanceCommand = require('./useridupdatebalance_handler');
+const registerAdminHelpCommand = require('./admin_help_handler');
+const registerAddBalanceNotifyCommand = require('./useridaddbalancenotify_handler');
 
 let callbackToServer = {};
 let callbackToInternationalServer = {};
@@ -70,9 +77,10 @@ fs.watchFile('./callbacks.json', { interval: 2000 }, () => {
 // but static instead of config-file-driven since alias choice (Ger27 vs Ger28, etc.)
 // is a deliberate ops decision, not something to load-balance automatically.
 const WG_COUNTRY_TO_ALIAS = {
-    ger: 'Ger27',
+    ger: 'Ger28',
     sweden: 'S84',  // TODO: fill in
     // fin: 'XXX',
+    ca: 'Ca01',
     it: 'IT01',
     // nig: 'XXX',
     // tur: 'XXX',
@@ -165,10 +173,10 @@ const subMenus = {
                     //{ text: 'Iran 🇮🇷', callback_data: 'speed_ir' }
                     { text: 'Italy 🇮🇹 ', callback_data: 'wg_speed_it' }
                 ],
-                //[
-                    //{ text: 'Nigeria 🇳🇬 ', callback_data: 'wg_speed_nig' },
-                    //{ text: 'Turkey 🇹🇷 ', callback_data: 'wg_speed_tur' }
-                //],
+                [
+                    { text: 'Nigeria 🇳🇬 ', callback_data: 'wg_speed_nig' },
+                    { text: 'Turkey 🇹🇷 ', callback_data: 'wg_speed_tur' }
+                ],
                 //[
                   //  { text: 'India 🇮🇳', callback_data: 'wg_speed_in' },
                    // { text: 'Egypt 🇪🇬 ' , callback_data: 'wg_speed_eg' }
@@ -240,14 +248,14 @@ const subMenus = {
                 ],
                 [
                     //{ text: 'Finland 🇫🇮 ', callback_data: 'speed_fin' },
-                    { text: 'Thailand 🇹🇭 ', callback_data: 'speed_thailand'},
+                    { text: 'Canada 🇨🇦 ', callback_data: 'speed_canada'},
                     //{ text: 'Iran 🇮🇷', callback_data: 'speed_ir' }
                     { text: 'Italy 🇮🇹 ', callback_data: 'speed_it' }
                 ],
-                //[
-                    //{ text: 'Nigeria 🇳🇬 ', callback_data: 'speed_nig' },
-                    //{ text: 'Turkey 🇹🇷 ', callback_data: 'speed_tur' }
-                //],
+                [
+                    { text: 'Nigeria 🇳🇬 ', callback_data: 'speed_nig' },
+                    { text: 'Turkey 🇹🇷 ', callback_data: 'speed_tur' }
+                ],
                 //[
                     //{ text: 'India 🇮🇳', callback_data: 'speed_in' },
                     //{ text: 'Egypt 🇪🇬 ' , callback_data: 'speed_eg' }
@@ -360,6 +368,13 @@ registerAdminCommand(bot, { db });
 registerBroadcastCommand(bot, { db });
 registerServerCheckCommand(bot, { db, SERVERS, axios, https });
 registerUsageWarningCommand(bot, { db, SERVERS, axios, https });
+registerRemoveKeyExpiredCommand(bot, { db, SERVERS, axios, https });
+registerListUsersCommand(bot, { db });
+registerUsageWarningInfoCommand(bot, { db, SERVERS, axios, https });
+registerCheckBalanceCommand(bot, { db });
+registerUserIdUpdateBalanceCommand(bot, { db });
+registerAdminHelpCommand(bot, { db });
+registerAddBalanceNotifyCommand(bot, { db });
 
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
