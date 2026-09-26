@@ -39,6 +39,10 @@ const registerCheckBalanceCommand = require('./checkbalance_handler');
 const registerUserIdUpdateBalanceCommand = require('./useridupdatebalance_handler');
 const registerAdminHelpCommand = require('./admin_help_handler');
 const registerAddBalanceNotifyCommand = require('./useridaddbalancenotify_handler');
+const registerLastKeysCommand = require('./lastkeys_handler');
+const registerListBlockedCommand = require('./listblocked_handler');
+const registerTestServerCommand = require('./testserver_handler');
+const registerAvailableServersCommand = require('./availableserversoutline_handler');
 
 let callbackToServer = {};
 let callbackToInternationalServer = {};
@@ -254,7 +258,7 @@ const subMenus = {
                 ],
                 [
                     { text: 'Nigeria 🇳🇬 ', callback_data: 'speed_nig' },
-                    { text: 'Turkey 🇹🇷 ', callback_data: 'speed_tur' }
+                    { text: 'Pakistan 🇵🇰 ', callback_data: 'speed_pak' }
                 ],
                 //[
                     //{ text: 'India 🇮🇳', callback_data: 'speed_in' },
@@ -375,6 +379,10 @@ registerCheckBalanceCommand(bot, { db });
 registerUserIdUpdateBalanceCommand(bot, { db });
 registerAdminHelpCommand(bot, { db });
 registerAddBalanceNotifyCommand(bot, { db });
+registerLastKeysCommand(bot, { db, SERVERS, axios, https });
+registerListBlockedCommand(bot, { db });
+registerTestServerCommand(bot, { db, SERVERS, createNewKey });
+registerAvailableServersCommand(bot, { db, SERVERS });
 
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
