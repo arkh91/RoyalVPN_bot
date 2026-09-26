@@ -1,169 +1,332 @@
-const pool = require('../db'); // path to db.js
+// db/WGKeyCreation.js
 const axios = require('axios');
-const servers = require('../servers');
-const flags = require('./flags');
+const crypto = require('crypto');
+const pool = require('../db'); // path to db.js (mysql2/promise pool)
 
-process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0'; // For local/test only
+// ──────────────────────────────────────────────────────────────
+// X25519 public-key derivation from a raw WireGuard private key.
+//
+// WireGuard keys are raw 32-byte X25519 keys, base64-encoded.
+// The /create endpoint (see install-wg.sh -> server.js) only ever
+// returns the *private* key in the rendered client config — it
+// never hands back the client's own public key as a separate
+// value. Since wg_clients.public_key is NOT NULL UNIQUE, we
+// derive it ourselves rather than depending on the `wg` CLI being
+// installed on the bot host. This is exactly what `wg pubkey` does
+// internally (scalar multiplication against the Curve25519 base
+// point) — not a guess, just the same math.
+// ──────────────────────────────────────────────────────────────
 
-function getTimestampName() {
-    const now = new Date();
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
-    const dd = String(now.getDate()).padStart(2, '0');
-    const yyyy = now.getFullYear();
-    const hh = String(now.getHours()).padStart(2, '0');
-    const min = String(now.getMinutes()).padStart(2, '0');
-    const ss = String(now.getSeconds()).padStart(2, '0');
-    return `${mm}${dd}${yyyy}_${hh}${min}${ss}`;
+// Fixed ASN.1 prefixes for wrapping/unwrapping raw X25519 keys via Node's crypto module.
+const X25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex'); // 16 bytes + 32-byte key = 48
+const X25519_SPKI_KEY_LEN = 32;
+
+function derivePublicKeyFromPrivate(privateKeyBase64) {
+    const privRaw = Buffer.from(privateKeyBase64, 'base64');
+    if (privRaw.length !== 32) {
+        throw new Error(`Unexpected private key length: ${privRaw.length} bytes`);
+    }
+
+    const pkcs8Der = Buffer.concat([X25519_PKCS8_PREFIX, privRaw]);
+    const privateKeyObject = crypto.createPrivateKey({
+        key: pkcs8Der,
+        format: 'der',
+        type: 'pkcs8'
+    });
+
+    const publicKeyObject = crypto.createPublicKey(privateKeyObject);
+    const spkiDer = publicKeyObject.export({ type: 'spki', format: 'der' });
+    const rawPublicKey = spkiDer.subarray(spkiDer.length - X25519_SPKI_KEY_LEN);
+
+    return rawPublicKey.toString('base64');
 }
 
-function handleError(error) {
+// ──────────────────────────────────────────────────────────────
+// Parse the plain-text WireGuard client config returned by /create
+// (Content-Type: text/plain — confirmed against install-wg.sh's
+// server.js and a live response from the Germany node).
+// ──────────────────────────────────────────────────────────────
+function parseClientConfigText(rawText) {
+    const parts = rawText.split('[Peer]');
+    if (parts.length < 2) {
+        throw new Error('Unexpected /create response format (no [Peer] section found)');
+    }
+
+    const interfacePart = parts[0];
+    const peerPart = parts[1];
+
+    const privateKeyMatch = interfacePart.match(/PrivateKey\s*=\s*(\S+)/);
+    const addressMatch = interfacePart.match(/Address\s*=\s*(\S+)/);   // e.g. "10.66.66.3/32"
+    const dnsMatch = interfacePart.match(/DNS\s*=\s*(\S+)/);
+    const serverPubKeyMatch = peerPart.match(/PublicKey\s*=\s*(\S+)/);
+    const endpointMatch = peerPart.match(/Endpoint\s*=\s*(\S+)/);
+    const allowedIpsMatch = peerPart.match(/AllowedIPs\s*=\s*(\S+)/);  // e.g. "0.0.0.0/0"
+
+    if (!privateKeyMatch || !addressMatch) {
+        throw new Error('Unexpected /create response format (missing PrivateKey or Address)');
+    }
+
+    return {
+        privateKey: privateKeyMatch[1],
+        address: addressMatch[1],                                     // client's assigned IP, e.g. "10.66.66.3/32"
+        dns: dnsMatch ? dnsMatch[1] : null,
+        serverPublicKey: serverPubKeyMatch ? serverPubKeyMatch[1] : null,
+        endpoint: endpointMatch ? endpointMatch[1] : null,
+        allowedIps: allowedIpsMatch ? allowedIpsMatch[1] : '0.0.0.0/0',
+        rawConfig: rawText.trim()
+    };
+}
+
+function handleError(error, context) {
     if (error.response) {
-        console.error('❌ API error:', error.response.status, error.response.data);
+        console.error(`❌ WG API error [${context}]:`, error.response.status, error.response.data);
     } else {
-        console.error('❌ Request error:', error.message);
+        console.error(`❌ WG request error [${context}]:`, error.message);
     }
 }
 
-async function setKeyLimit(apiUrl, apiKey, keyId, dataLimitBytes) {
+// ──────────────────────────────────────────────────────────────
+// Look up a vpn_servers row by its ServerAlias (e.g. "Ger27").
+// ──────────────────────────────────────────────────────────────
+async function getServerByAlias(serverAlias) {
+    const [rows] = await pool.execute(
+        `SELECT ServerName, ServerAlias, Country, City,
+                PublicURLInternational, PublicURLIran,
+                WireGuardPort, BearerToken, Status
+         FROM vpn_servers
+         WHERE ServerAlias = ?
+         LIMIT 1`,
+        [serverAlias]
+    );
+
+    if (!rows || rows.length === 0) {
+        throw new Error(`No vpn_servers row found for ServerAlias "${serverAlias}"`);
+    }
+
+    const server = rows[0];
+    if (server.Status !== 'ACTIVE') {
+        throw new Error(`Server "${serverAlias}" is not ACTIVE (status: ${server.Status})`);
+    }
+
+    return server;
+}
+/*
+// ──────────────────────────────────────────────────────────────
+// Call /create once against the chosen server and return the
+// parsed peer info (does NOT touch the DB).
+// ──────────────────────────────────────────────────────────────
+async function requestNewPeer(server, isInternational) {
+    let baseUrl = isInternational ? server.PublicURLInternational : server.PublicURLIran;
+    if (!baseUrl) {
+        throw new Error(`Server "${server.ServerAlias}" has no ${isInternational ? 'PublicURLInternational' : 'PublicURLIran'} configured`);
+    }
+    if (!server.BearerToken) {
+        throw new Error(`Server "${server.ServerAlias}" has no BearerToken configured`);
+    }
+
+    // PublicURLInternational / PublicURLIran are stored as bare hostnames
+    // (e.g. "us.us08dir.mithracorp.com"), no scheme — axios needs an absolute URL.
+    if (!/^https?:\/\//i.test(baseUrl)) {
+        baseUrl = `https://${baseUrl}`;
+    }
+
+    const createUrl = `${baseUrl.replace(/\/$/, '')}/create`;
+
+    let response;
     try {
-        const response = await axios.put(
-            `${apiUrl}/${apiKey}/access-keys/${keyId}/data-limit`,
-            { limit: { bytes: dataLimitBytes } },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-outline-access-key': apiKey,
-                },
-            }
-        );
-
-        if (response.status === 204) {
-            console.log(`✅ Data limit set to ${dataLimitBytes / 1024 ** 3} GB for key ${keyId}`);
-        } else {
-            console.warn('⚠️ Unexpected response during limit set:', response.status);
-        }
+        response = await axios.post(createUrl, {}, {
+            headers: {
+                Authorization: `Bearer ${server.BearerToken}`,
+                'Content-Type': 'application/json'
+            },
+            timeout: 15000
+        });
     } catch (error) {
-        handleError(error);
+        handleError(error, 'requestNewPeer');
+        throw error;
     }
-}
 
-async function renameKey(apiUrl, apiKey, keyId, baseName) {
+    const parsed = parseClientConfigText(
+        typeof response.data === 'string' ? response.data : JSON.stringify(response.data)
+    );
+
+    const publicKey = derivePublicKeyFromPrivate(parsed.privateKey);
+
+    return {
+        privateKey: parsed.privateKey,
+        publicKey,
+        address: parsed.address,              // e.g. "10.66.66.3/32"
+        dns: parsed.dns,                       // e.g. "1.1.1.1"
+        allowedIps: parsed.allowedIps,         // e.g. "0.0.0.0/0"
+        serverPublicKey: parsed.serverPublicKey,
+        endpoint: parsed.endpoint,
+        rawConfig: parsed.rawConfig
+    };
+}
+*/
+async function requestNewPeer(server, isInternational) {
+    // Always call the management API over the international hostname —
+    // PublicURLIran is the client-facing tunnel endpoint, not reachable
+    // (or not meant) for the /create API call itself.
+    let apiBaseUrl = server.PublicURLInternational;
+    if (!apiBaseUrl) {
+        throw new Error(`Server "${server.ServerAlias}" has no PublicURLInternational configured`);
+    }
+    if (!server.BearerToken) {
+        throw new Error(`Server "${server.ServerAlias}" has no BearerToken configured`);
+    }
+
+    if (!/^https?:\/\//i.test(apiBaseUrl)) {
+        apiBaseUrl = `https://${apiBaseUrl}`;
+    }
+
+    const createUrl = `${apiBaseUrl.replace(/\/$/, '')}/create`;
+
+    let response;
     try {
-        // Match flag by prefix (case-insensitive)
-        const prefix = Object.keys(flags).find(key =>
-            baseName.toUpperCase().startsWith(key.toUpperCase())
-        );
-        const flag = prefix ? ` ${flags[prefix]}` : '';
-        const renamed = baseName + flag;
-
-        const response = await axios.put(
-            `${apiUrl}/${apiKey}/access-keys/${keyId}/name`,
-            { name: renamed },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-outline-access-key': apiKey,
-                },
-            }
-        );
-
-        if (response.status === 204) {
-            console.log(`✏️  Key ${keyId} renamed to "${renamed}"`);
-            return renamed;
-        } else {
-            console.warn('⚠️ Rename responded with:', response.status);
-            return baseName;
-        }
+        response = await axios.post(createUrl, {}, {
+            headers: {
+                Authorization: `Bearer ${server.BearerToken}`,
+                'Content-Type': 'application/json'
+            },
+            timeout: 15000
+        });
     } catch (error) {
-        handleError(error);
-        return baseName;
+        handleError(error, 'requestNewPeer');
+        throw error;
     }
+
+    const parsed = parseClientConfigText(
+        typeof response.data === 'string' ? response.data : JSON.stringify(response.data)
+    );
+
+    const publicKey = derivePublicKeyFromPrivate(parsed.privateKey);
+
+    // The Endpoint the *user* connects to is independent of which host
+    // we used to call /create. Pick it based on isInternational, and
+    // override whatever the server returned in its own config text.
+    const tunnelHost = isInternational ? server.PublicURLInternational : server.PublicURLIran;
+    if (!tunnelHost) {
+        throw new Error(`Server "${server.ServerAlias}" has no ${isInternational ? 'PublicURLInternational' : 'PublicURLIran'} configured for the tunnel endpoint`);
+    }
+
+    const endpoint = `${tunnelHost}:${server.WireGuardPort}`;
+
+    // Rewrite the Endpoint line in the raw config text so what the user
+    // pastes/imports matches `endpoint` exactly.
+    const rewrittenConfig = parsed.rawConfig.replace(
+        /Endpoint\s*=\s*\S+/,
+        `Endpoint = ${endpoint}`
+    );
+
+    return {
+        privateKey: parsed.privateKey,
+        publicKey,
+        address: parsed.address,
+        dns: parsed.dns,
+        allowedIps: parsed.allowedIps,
+        serverPublicKey: parsed.serverPublicKey,
+        endpoint,
+        rawConfig: rewrittenConfig
+    };
 }
-
-async function saveKeyToDB({ userId, fullKey, guiKey, serverName, dataLimit, keyNumber }) {
-    const issuedAt = new Date();
-    const expiredAt = new Date(issuedAt);
-    expiredAt.setDate(expiredAt.getDate() + 30);
-
+// ──────────────────────────────────────────────────────────────
+// Insert one row into wg_clients, matching the real schema exactly:
+// client_id, UserID, name, description, server_name, private_key,
+// public_key, address, dns, allowed_ips, endpoint, is_active,
+// expires_at, max_data_limit. (rx_bytes/tx_bytes/snapshots/etc. are
+// left at their column defaults — usage tracking is handled
+// elsewhere, per your earlier note.)
+// ──────────────────────────────────────────────────────────────
+async function saveClientToDB({ userId, serverName, name, description, peer, maxDataLimit, validDays }) {
     const sql = `
-        INSERT INTO UserKeys 
-            (UserID, FullKey, GuiKey, ServerName, DataLimit, KeyNumber, IssuedAt, ExpiredAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO wg_clients
+            (UserID, name, description, server_name,
+             private_key, public_key, address, dns, allowed_ips, endpoint,
+             is_active, expires_at, max_data_limit, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW() + INTERVAL ? DAY, ?, ?)
     `;
 
     const values = [
         userId,
-        fullKey,
-        guiKey,
+        name,
+        description,
         serverName,
-        dataLimit,
-        keyNumber,
-        issuedAt,
-        expiredAt
+        peer.privateKey,
+        peer.publicKey,
+        peer.address,
+        peer.dns,
+        peer.allowedIps,
+        peer.endpoint,
+        validDays,
+        maxDataLimit,
+        'telegram_bot'
     ];
 
-    try {
-        await pool.execute(sql, values);
-        console.log('✅ Key saved to database.');
-    } catch (err) {
-        console.error('❌ Failed to save key to DB:', err.message);
-    }
+    const [result] = await pool.execute(sql, values);
+    return result.insertId;
 }
 
-async function createNewKey(selectedServer, userId, bandwidthGb = 1) {
-    const { apiUrl, apiKey } = servers[selectedServer];
-    if (!apiUrl || !apiKey) {
-        throw new Error(`Missing API credentials for server: ${selectedServer}`);
-    }
+/**
+ * Create one or more WireGuard peers for a user's purchase.
+ *
+ * @param {Object} opts
+ * @param {string} opts.serverAlias   e.g. "Ger27" — looked up against vpn_servers.ServerAlias
+ * @param {number} opts.userId        Telegram user ID
+ * @param {number} opts.deviceCount   number of peers to create (e.g. 1, 2, 3)
+ * @param {number} opts.bandwidthGb   selected bandwidth tier in GB (stored as max_data_limit bytes —
+ *                                    enforcement is handled elsewhere per your note)
+ * @param {boolean} opts.isInternational  true = use PublicURLInternational, false = PublicURLIran
+ *                                        (mirrors the Outline flow's session.isInternational flag)
+ * @param {number} [opts.validDays=30]
+ *
+ * @returns {Promise<Array<{deviceSeq:number, clientId:number, address:string, config:string}>>}
+ */
+async function createWireGuardKeys({ serverAlias, userId, deviceCount, bandwidthGb, isInternational, validDays = 30 }) {
+    if (!serverAlias) throw new Error('serverAlias is required');
+    if (!deviceCount || deviceCount < 1) throw new Error('deviceCount must be >= 1');
 
-    const dataLimitBytes = bandwidthGb * 1024 * 1024 * 1000;
+    const server = await getServerByAlias(serverAlias);
 
-    try {
-        const response = await axios.post(
-            `${apiUrl}/${apiKey}/access-keys`,
-            {},
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-outline-access-key': apiKey,
-                },
-            }
-        );
+    // Same byte convention KeyCreation.js (Outline) uses for "GB":
+    //const maxDataLimit = bandwidthGb * 1024 * 1024 * 1000;
 
-        if (response.status !== 201) {
-            console.error('❌ Failed to create key:', response.status);
-            return null;
-        }
+// Total purchased bandwidth is split evenly across devices —
+// e.g. 50GB / 2 devices = 25GB cap per peer.
+const perDeviceGb = bandwidthGb / deviceCount;
+const maxDataLimit = perDeviceGb * 1024 * 1024 * 1000;
 
-        const accessKey = response.data;
-        const timestamp = getTimestampName();
-        const baseName = `${selectedServer}_${timestamp}`;
+    const timestamp = Date.now();
+    const results = [];
 
-        const renamed = await renameKey(apiUrl, apiKey, accessKey.id, baseName);
-        await setKeyLimit(apiUrl, apiKey, accessKey.id, dataLimitBytes);
+    for (let deviceSeq = 1; deviceSeq <= deviceCount; deviceSeq++) {
+        const peer = await requestNewPeer(server, isInternational);
 
-        const accessUrlWithLabel = `${accessKey.accessUrl}#${renamed}`;
-        // Remove '/?outline=1' from the URL
-        const cleanedKey = accessUrlWithLabel.replace('/?outline=1', '');
+        const name = `${server.ServerName}_${timestamp}_dev${deviceSeq}`;
 
-        console.log(`✅ New access key created: ${cleanedKey}`); 
-
-        await saveKeyToDB({
+        const clientId = await saveClientToDB({
             userId,
-	        fullKey: cleanedKey,
-            guiKey: `#${renamed}`,
-            serverName: selectedServer,
-            dataLimit: bandwidthGb,
-            keyNumber: timestamp
+            serverName: server.ServerName,
+            name,
+            description: 'Created via Telegram bot purchase',
+            peer,
+            maxDataLimit,
+            validDays
         });
 
-        return cleanedKey;
-    } catch (error) {
-        handleError(error);
-        throw error;
+        console.log(`✅ WG client created: user=${userId} server=${server.ServerName} client_id=${clientId} (device ${deviceSeq}/${deviceCount})`);
+
+        results.push({
+            deviceSeq,
+            clientId,
+            address: peer.address,
+            config: peer.rawConfig
+        });
     }
+
+    return results;
 }
 
 module.exports = {
-    createNewKey
+    createWireGuardKeys
 };
