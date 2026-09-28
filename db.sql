@@ -3,7 +3,8 @@ CREATE TABLE accounts (
     FirstName VARCHAR(50),
     LastName VARCHAR(50),
     Username VARCHAR(50),
-    CurrentBalance DECIMAL(10,2) DEFAULT 0.00,
+    CurrentBalance DECIMAL(10,2) DEFAULT 0.00,   -- USD wallet (unchanged)
+    IRC DECIMAL(15,0) NOT NULL DEFAULT 12000,    -- Iranian currency (Rial) wallet, whole numbers, up to 15 digits
     CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
