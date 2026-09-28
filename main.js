@@ -33,6 +33,7 @@ const registerBroadcastCommand = require('./broadcast_handler');
 const registerServerCheckCommand = require('./servercheck_handler');
 const registerUsageWarningCommand = require('./usagewarning_handler');
 const registerRemoveKeyExpiredCommand = require('./removekeyexpired_handler');
+const registerWgRemoveKeysCommands = require('./wgremovekeys_handler');
 const registerListUsersCommand = require('./listusers_handler');
 const registerUsageWarningInfoCommand = require('./usagewarninginfo_handler');
 const registerCheckBalanceCommand = require('./checkbalance_handler');
@@ -42,7 +43,10 @@ const registerAddBalanceNotifyCommand = require('./useridaddbalancenotify_handle
 const registerLastKeysCommand = require('./lastkeys_handler');
 const registerListBlockedCommand = require('./listblocked_handler');
 const registerTestServerCommand = require('./testserver_handler');
+const registerWGTestServerCommand = require('./WGtestserver_handler');
+const registerWGTestServerIranCommand = require('./WGtestserveriran_handler');
 const registerAvailableServersCommand = require('./availableserversoutline_handler');
+const registerAvailableServersWGCommand = require('./availableserverswg_handler');
 
 let callbackToServer = {};
 let callbackToInternationalServer = {};
@@ -91,7 +95,7 @@ const WG_COUNTRY_TO_ALIAS = {
     // in: 'XXX',
     // eg: 'XXX',
     tha: 'Thai02',
-    // uk: 'XXX',
+    uk: 'UK42',
      usa: 'US08',
 };
 
@@ -373,6 +377,7 @@ registerBroadcastCommand(bot, { db });
 registerServerCheckCommand(bot, { db, SERVERS, axios, https });
 registerUsageWarningCommand(bot, { db, SERVERS, axios, https });
 registerRemoveKeyExpiredCommand(bot, { db, SERVERS, axios, https });
+registerWgRemoveKeysCommands(bot, { db, axios });
 registerListUsersCommand(bot, { db });
 registerUsageWarningInfoCommand(bot, { db, SERVERS, axios, https });
 registerCheckBalanceCommand(bot, { db });
@@ -382,7 +387,12 @@ registerAddBalanceNotifyCommand(bot, { db });
 registerLastKeysCommand(bot, { db, SERVERS, axios, https });
 registerListBlockedCommand(bot, { db });
 registerTestServerCommand(bot, { db, SERVERS, createNewKey });
+
+
 registerAvailableServersCommand(bot, { db, SERVERS });
+registerWGTestServerCommand(bot, { db, createWireGuardKeys });
+registerWGTestServerIranCommand(bot, { db, createWireGuardKeys });
+registerAvailableServersWGCommand(bot, { db });
 
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
@@ -738,11 +748,42 @@ const requiredAmount = Math.round(
             validDays:       30
         });
 
+        /**
+         * Sends each peer's config as ONE Telegram message: a caption with
+         * a tap-to-copy "#<name>" header (backticks = Telegram's inline
+         * code, which renders with the same copy affordance as the ```
+         * config block below it) plus the flag emoji, and the same config
+         * attached as a downloadable "<fileName>.conf" file. The
+         * caption's name can be anything (it's just chat text), but the
+         * attached filename MUST be <=15 chars, [a-zA-Z0-9_=+.-] only —
+         * that's what the WireGuard apps turn into the tunnel's interface
+         * name on import, and anything else (emoji, '#', longer strings)
+         * fails to import. See buildFileName() in WGKeyCreation.js.
+         *
+         * Usage: called once per peer immediately after
+         * createWireGuardKeys() resolves, inside the wg_bw_ handler above.
+         *
+         * Note: Telegram caption limit is 1024 chars (vs 4096 for a plain
+         * text message) — fine for a normal WG config, but keep an eye on
+         * it if configs ever grow (extra DNS entries, etc).
+         */
         for (const peer of peers) {
-            await bot.sendMessage(
+            const caption =
+                `✅ *WireGuard Config (Device ${peer.deviceSeq}/${session.devices})*\n\n` +
+                `\`#${peer.name}\`\n\n` +
+                `\`\`\`\n${peer.config}\n\`\`\``;
+
+            await bot.sendDocument(
                 chatId,
-                `✅ *WireGuard Config (Device ${peer.deviceSeq}/${session.devices})*\n\n\`\`\`\n${peer.config}\n\`\`\``,
-                { parse_mode: 'Markdown' }
+                Buffer.from(peer.config, 'utf8'),
+                {
+                    caption,
+                    parse_mode: 'Markdown'
+                },
+                {
+                    filename: `${peer.fileName}.conf`,
+                    contentType: 'text/plain'
+                }
             );
         }
 
