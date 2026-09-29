@@ -64,6 +64,7 @@ CREATE TABLE vpn_servers (
 
     -- Server address
     IPAddress VARCHAR(45),
+    DNS VARCHAR(100) NOT NULL DEFAULT '1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4',
 
     -- Security
     APIKey VARCHAR(255),
@@ -168,4 +169,40 @@ CREATE TABLE countries (
     CreatedAt    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (CountryID),
     UNIQUE KEY uq_countries_countrycode (CountryCode)
+);
+
+-- Referral / invite program (see referral.js, db/referral.js, referral_handler.js)
+CREATE TABLE referrals (
+    UserID           BIGINT UNSIGNED PRIMARY KEY,
+    ReferralCode     VARCHAR(12) NOT NULL,
+    ReferredByUserID BIGINT UNSIGNED DEFAULT NULL,
+    CreatedAt        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt        DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uniq_referral_code (ReferralCode),
+    INDEX idx_referred_by (ReferredByUserID),
+
+    CONSTRAINT fk_referrals_user
+        FOREIGN KEY (UserID) REFERENCES accounts(UserID) ON DELETE CASCADE,
+    CONSTRAINT fk_referrals_referred_by
+        FOREIGN KEY (ReferredByUserID) REFERENCES accounts(UserID) ON DELETE SET NULL
+);
+
+CREATE TABLE referral_rewards (
+    RewardID        INT AUTO_INCREMENT PRIMARY KEY,
+    InviterUserID   BIGINT UNSIGNED NOT NULL,
+    InvitedUserID   BIGINT UNSIGNED NOT NULL,
+    PurchaseType    VARCHAR(20) NOT NULL,
+    Currency        ENUM('USD','IRC') NOT NULL,
+    PurchaseAmount  DECIMAL(18,4) NOT NULL,
+    RewardAmount    DECIMAL(18,4) NOT NULL,
+    CreatedAt       DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_inviter (InviterUserID),
+    INDEX idx_invited (InvitedUserID),
+
+    CONSTRAINT fk_rewards_inviter
+        FOREIGN KEY (InviterUserID) REFERENCES accounts(UserID) ON DELETE CASCADE,
+    CONSTRAINT fk_rewards_invited
+        FOREIGN KEY (InvitedUserID) REFERENCES accounts(UserID) ON DELETE CASCADE
 );
