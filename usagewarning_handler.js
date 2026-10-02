@@ -4,50 +4,50 @@
 //   const registerUsageWarningCommand = require('./usagewarning_handler');
 //   registerUsageWarningCommand(bot, { db, SERVERS, axios, https });
 //
-// Registers "/UsageWarning" — scans every key across every server and, for
-// any key that has used 90% or more of its configured data limit, sends
-// that key's owner a warning message. Reports back to the admin who ran
-// it, per key that triggered a warning, whether the notification actually
-// sent.
+// Registers "/UsageWarning [min] [max]" — scans every key across every
+// server and, for any key whose usage falls in the given percentage
+// range, sends that key's owner a warning message. Reports back to the
+// admin who ran it with ONE SEPARATE MESSAGE PER FLAGGED KEY (not one
+// combined report), so each key's result is its own message.
 //
 // ACCESS: superadmin + admin (moderator excluded) — same gate as
-// /servercheck, since this is a similarly broad, cross-user operation.
+// /servercheck and /usagewarninginfo.
 //
-// Notification sent to the key owner:
-//   🔑 You have used more than %90 percent of your traffic.
+// Usage examples:
+//   /UsageWarning          -> shows usage instructions, runs no scan
+//   /UsageWarning 20       -> warns every key at or above 20% usage
+//   /UsageWarning 20 70    -> warns every key between 20% and 70% usage
+//
+// Notification sent to the key owner (min is always what's quoted, even
+// when a max is also given — e.g. "20 70" still says "at least 20"):
+//   🔑 You have used at least <min> percent of your traffic.
 //   #GuiKey
 //   Please contact @MithraVPNcorp
 //
-// Report sent back to the admin, per qualifying key:
+// ONE message sent back to the admin PER qualifying key:
 //   #GuiKey
 //   Usage/Limit
-//   ✅Notification message sent to UserID 123456789 @username
+//   ✅Notification message sent to 123456789 @username
 //   -- or --
-//   Notification message was failed sending to UserID 123456789 @username
+//   Notification message was failed sending to 123456789 @username
 //
 // Design notes:
 //   - "All available keys" is read literally: every row in UserKeys for
-//     every configured server, with NO age cutoff (unlike /ks's 45-day
-//     or /servercheck's 60-day windows). If you'd rather restrict this to
-//     recent keys only, add an IssuedAt filter to the SQL below.
+//     every configured server, with NO age cutoff.
 //   - Keys with no configured DataLimit (Outline "no limit" keys) can't
-//     have a usage PERCENTAGE computed, so they're skipped entirely —
-//     they never trigger a warning regardless of raw bytes used.
-//   - Keys that no longer exist on their server (i.e. would show
-//     "Expired" in /servercheck) are also skipped — there's no usage to
-//     evaluate and no reason to warn an owner about a key that's gone.
-//   - Sends are paced with a small delay (see SEND_DELAY_MS), same
-//     reasoning as /broadcast: avoid bursting past Telegram's outbound
-//     rate limits when many warnings go out in one run.
+//     have a usage PERCENTAGE computed, so they're skipped entirely.
+//   - Keys that no longer exist on their server (Expired) are skipped —
+//     there's no usage to evaluate.
+//   - Sends (both to key owners AND the per-key admin reports) are paced
+//     with a small delay to avoid bursting past Telegram's outbound rate
+//     limits when many warnings go out in one run.
 const { getKeysUsage, formatBytes } = require('./getKeysUsage');
 
+const registry = require('./commandRegistry');
+registry.register('/UsageWarning [min] [max]', 'scans usage %, notifies affected users', ['superadmin', 'admin']);
 // Usage:
-//   WARNING_THRESHOLD = 0.9 means "90% of the configured data limit"
-const WARNING_THRESHOLD = 0.9;
-
-// Usage:
-//   SEND_DELAY_MS paces each outbound warning message, same reasoning as
-//   /broadcast's rate-limit pacing.
+//   SEND_DELAY_MS paces each outbound message (both to key owners and to
+//   the admin's per-key report messages).
 const SEND_DELAY_MS = 35;
 
 // Usage:
@@ -57,21 +57,23 @@ function sleep(ms) {
 }
 
 // Usage:
-//   await sendInChunks(bot, chatId, longText)
+//   escapeHtml('<script>') -> '&lt;script&gt;'
 //
-// Splits a long report into multiple messages so it doesn't get rejected
-// by Telegram's ~4096 char message limit when many keys are flagged.
-async function sendInChunks(bot, chatId, text) {
-    const CHUNK_SIZE = 3500;
-    for (let i = 0; i < text.length; i += CHUNK_SIZE) {
-        await bot.sendMessage(chatId, text.slice(i, i + CHUNK_SIZE));
-    }
+// Now that the per-key admin report uses parse_mode: 'HTML' (for the
+// tap-to-copy <code> UserID), any interpolated text that ISN'T meant to
+// be markup needs escaping so it can't accidentally break the HTML or
+// get swallowed by the parser.
+function escapeHtml(text) {
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
 }
 
 module.exports = function registerUsageWarningCommand(bot, deps) {
     const { db, SERVERS, axios, https } = deps;
 
-    bot.onText(/^\/UsageWarning$/i, async (msg) => {
+    bot.onText(/^\/UsageWarning(?:\s+(\d+))?(?:\s+(\d+))?$/i, async (msg, match) => {
         const chatId = msg.chat.id;
         const senderId = msg.from.id;
 
@@ -86,6 +88,43 @@ module.exports = function registerUsageWarningCommand(bot, deps) {
                 return;
             }
 
+            // --- No arguments: show usage instructions, don't scan or send anything ---
+            if (match[1] === undefined) {
+                await bot.sendMessage(
+                    chatId,
+                    "⚠️ Usage:\n" +
+                    "/UsageWarning <min>          - warn keys at or above <min>% usage\n" +
+                    "/UsageWarning <min> <max>    - warn keys between <min>% and <max>% usage\n\n" +
+                    "Example: /UsageWarning 20\n" +
+                    "Example: /UsageWarning 20 70"
+                );
+                return;
+            }
+
+            // --- Parse min (required once any arg is given) and optional max ---
+            const minPercent = parseInt(match[1], 10);
+            if (isNaN(minPercent) || minPercent < 0 || minPercent > 100) {
+                await bot.sendMessage(chatId, '⚠️ <min> must be a number between 0 and 100.');
+                return;
+            }
+
+            let maxPercent = null;
+            if (match[2] !== undefined) {
+                maxPercent = parseInt(match[2], 10);
+                if (isNaN(maxPercent) || maxPercent < 0 || maxPercent > 100) {
+                    await bot.sendMessage(chatId, '⚠️ <max> must be a number between 0 and 100.');
+                    return;
+                }
+                if (maxPercent < minPercent) {
+                    await bot.sendMessage(chatId, '⚠️ <max> cannot be smaller than <min>.');
+                    return;
+                }
+            }
+
+            const minThreshold = minPercent / 100;
+            const maxThreshold = maxPercent === null ? null : maxPercent / 100;
+            const rangeLabel = maxPercent === null ? `>= ${minPercent}%` : `${minPercent}%-${maxPercent}%`;
+
             const serverNames = Object.keys(SERVERS);
             if (serverNames.length === 0) {
                 await bot.sendMessage(chatId, 'ℹ️ No servers configured.');
@@ -94,16 +133,13 @@ module.exports = function registerUsageWarningCommand(bot, deps) {
 
             await bot.sendMessage(
                 chatId,
-                `🔎 Scanning ${serverNames.length} server(s) for keys at or above ${Math.round(WARNING_THRESHOLD * 100)}% usage...`
+                `🔎 Scanning ${serverNames.length} server(s) for keys ${rangeLabel} usage...`
             );
 
-            const reportLines = [];
             let scannedKeys = 0;
             let flaggedKeys = 0;
 
             for (const serverName of serverNames) {
-                // Pull every DB-tracked key for this server, with its
-                // owner's Username for reporting.
                 const [rows] = await db.execute(
                     `SELECT uk.UserID, uk.GuiKey, a.Username
                      FROM UserKeys uk
@@ -119,7 +155,7 @@ module.exports = function registerUsageWarningCommand(bot, deps) {
                     usageMap = await getKeysUsage(serverName, SERVERS, axios, https);
                 } catch (err) {
                     console.error(`UsageWarning: usage fetch failed for ${serverName}:`, err.message);
-                    reportLines.push(`${serverName}: ⚠️ Failed to reach server API: ${err.message}`);
+                    await bot.sendMessage(chatId, `${serverName}: ⚠️ Failed to reach server API: ${err.message}`);
                     continue;
                 }
 
@@ -129,52 +165,47 @@ module.exports = function registerUsageWarningCommand(bot, deps) {
                     if (!guiKey) continue;
 
                     const info = usageMap.get(guiKey);
-                    // No info -> key no longer exists on the server (Expired) -> skip.
+                    // No info -> key no longer on server (Expired) -> skip.
                     // No limitBytes -> "no limit" key, can't compute a percentage -> skip.
                     if (!info || !info.limitBytes) continue;
 
                     const percent = info.bytes / info.limitBytes;
-                    if (percent < WARNING_THRESHOLD) continue;
+                    if (percent < minThreshold) continue;
+                    if (maxThreshold !== null && percent > maxThreshold) continue;
 
                     flaggedKeys++;
                     const usageText = `${formatBytes(info.bytes)}/${formatBytes(info.limitBytes)}`;
                     const nameForReport = row.Username ? `@${row.Username}` : 'No Username';
 
+                    // Notification always quotes <min>, even for a range —
+                    // "at least <min> percent", per request.
                     const notificationText =
-                        `🔑 You have used more than %90 percent of your traffic.\n` +
+                        `🔑 You have used at least ${minPercent} percent of your traffic.\n` +
                         `${guiKey}\n` +
                         `Please contact @MithraVPNcorp`;
 
                     let sendResultLine;
                     try {
                         await bot.sendMessage(row.UserID, notificationText);
-                        sendResultLine = `✅Notification message sent to UserID ${row.UserID} ${nameForReport}`;
+                        sendResultLine = `✅Notification message sent to <code>${row.UserID}</code> ${nameForReport}`;
                     } catch (err) {
-                        console.error(`❌UsageWarning: failed to notify UserID ${row.UserID}:`, err.message);
-                        sendResultLine = `❌Notification message was failed sending to UserID ${row.UserID} ${nameForReport}`;
+                        console.error(`UsageWarning: failed to notify UserID ${row.UserID}:`, err.message);
+                        sendResultLine = `Notification message was failed sending to <code>${row.UserID}</code> ${nameForReport}`;
                     }
 
-                    reportLines.push(`${guiKey}\n${usageText}\n${sendResultLine}`);
+                    // ONE separate message per flagged key, sent to the admin.
+                    // parse_mode: 'HTML' makes the <code>-wrapped UserID tap-to-copy.
+                    await bot.sendMessage(chatId, `${guiKey}\n${usageText}\n${sendResultLine}`, { parse_mode: 'HTML' });
 
                     // Pace outbound sends to stay under Telegram's rate limits
                     await sleep(SEND_DELAY_MS);
                 }
             }
 
-            if (reportLines.length === 0) {
-                await bot.sendMessage(
-                    chatId,
-                    `✅ Scan complete. ${scannedKeys} key(s) checked, none at or above ${Math.round(WARNING_THRESHOLD * 100)}%.`
-                );
-                return;
-            }
-
-            const report =
-                `📋 Usage warning scan complete.\n` +
-                `Checked: ${scannedKeys} key(s) | Flagged: ${flaggedKeys}\n\n` +
-                reportLines.join('\n\n');
-
-            await sendInChunks(bot, chatId, report);
+            await bot.sendMessage(
+                chatId,
+                `📋 Scan complete (${rangeLabel}).\nChecked: ${scannedKeys} key(s) | Flagged: ${flaggedKeys}`
+            );
 
         } catch (err) {
             console.error('/UsageWarning error:', err);

@@ -31,6 +31,9 @@
 //   global outbound cap while still finishing a broadcast reasonably fast.
 const SEND_DELAY_MS = 35;
 
+const registry = require('./commandRegistry');
+registry.register('/broadcast <message>', 'send a message to every user', ['superadmin']);
+
 // Usage:
 //   sleep(35) -> a Promise that resolves after 35ms
 //

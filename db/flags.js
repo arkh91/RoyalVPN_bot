@@ -2,6 +2,9 @@
 
 
 const FLAGS = {
+  Ca: '🇨🇦',
+  Eg: '🇪🇬',
+  Nig: '🇳🇬',
   Ger: '🇩🇪',
   In: '🇮🇳',
   Fin: '🇫🇮',
@@ -9,7 +12,9 @@ const FLAGS = {
   Sw: '🇸🇪',
   sp: '🇪🇸',
   IT: '🇮🇹',
+  Thai: "🇹🇭",
   Tur: '🇹🇷',
+  Pak: '🇵🇰',
   UK: '🇬🇧',
 };
 

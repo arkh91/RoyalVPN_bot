@@ -14,6 +14,7 @@
     "speed_arm": "Arm01",
     "speed_uae": "UAE11",
     "speed_usa": "US08",
+    "speed_pak": "Pak01",
     "speed_uk": "UK41"
   },
   "callbackToInternationalServer": {
@@ -31,6 +32,8 @@
     "int_speed_arm": "Arm01",
     "speed_speed_uae": "UAE11",
     "int_speed_usa": "US08",
+    "int_speed_pak": "Pak01",
     "int_speed_uk": "UK41"
   }
 }
+

@@ -41,6 +41,9 @@
 //     error instead of silently skipping it or crashing the whole command.
 const { getKeysUsage, formatBytes } = require('./getKeysUsage');
 
+const registry = require('./commandRegistry');
+registry.register('/servercheck or /sc', 'per-server Usage/Limit or Expired report', ['superadmin', 'admin']);
+
 // Usage:
 //   await sendInChunks(bot, chatId, longText)
 //

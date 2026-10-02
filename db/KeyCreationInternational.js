@@ -6,10 +6,15 @@ const flags = require('./flags');
 process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0'; // For local/test only
 
 const customDomains = {
+    Ger25: 'ger25dir.krp2025.online',
     US08: 'us08dir.krp2025.online',
     IT01: 'it.krp2025.online',
     Sw84: 's84.krp2025.online',
-    // Add more as needed
+    UK37: 'uk37dir.krp2025.online',
+    sp01: 'sp01.krp2025.online',
+    Ger24: 'ger24.krp2025.online',
+
+	// Add more as needed
 };
 
 function getTimestampName() {
@@ -218,3 +223,4 @@ function getPolishedFullKey(cleanedKey, selectedServer) {
 module.exports = {
     createInternationalKey
 };
+

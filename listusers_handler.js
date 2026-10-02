@@ -24,6 +24,9 @@
 //     /ks and /servercheck, and the UserID in /UsageWarning.
 const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+const registry = require('./commandRegistry');
+registry.register('/listusers or /lu <count>', 'last N users added', ['superadmin', 'admin']);
+
 module.exports = function registerListUsersCommand(bot, deps) {
     const { db } = deps;
 

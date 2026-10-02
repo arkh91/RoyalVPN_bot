@@ -6,7 +6,10 @@
 //
 // Registers "/removekeyexpired <guikey|fullkey>" — identical lookup logic
 // to the existing /removekey command, but ONLY removes the key from its
-// Outline server. The UserKeys row is left untouched in the DB either way.
+// Outline server. FullKey/GuiKey/ServerName are left untouched in the DB
+// either way — but ExpiredAt IS now set to the current time whenever the
+// key is confirmed gone from the server (whether it was already gone, or
+// this call just removed it).
 //
 // ACCESS: superadmin + admin only (moderator excluded).
 //
@@ -24,7 +27,8 @@
 //     server while keeping DB history, e.g. for an already-expired key
 //     you still want billing/usage records for).
 //   - If the key is already gone from the server, that's reported as
-//     informational, not an error — there's nothing to remove.
+//     informational, not an error — but ExpiredAt still gets stamped,
+//     since "already gone" is itself confirmation the key expired.
 // Usage:
 //   normalizeKeyToken('#Ger27_07142026_150423 🇩🇪') -> '#Ger27_07142026_150423'
 //   normalizeKeyToken('ss://...@host:22627#Ger27_07142026_150423 🇩🇪')
@@ -36,6 +40,9 @@
 // the raw column silently fails. The real identifier is always
 // everything before the first whitespace — so we compare on that
 // token instead of the raw stored string. Same fix as keystatus_handler.js.
+const registry = require('./commandRegistry');
+registry.register('/removekeyexpired <key>', 'removes from server only, sets ExpiredAt', ['superadmin', 'admin']);
+
 function normalizeKeyToken(value) {
     return String(value).trim().split(/\s+/)[0];
 }
@@ -115,8 +122,10 @@ module.exports = function registerRemoveKeyExpiredCommand(bot, deps) {
             });
 
             if (!matchKey) {
-                // Nothing to remove — DB row is left as-is, unlike /removekey.
-                await bot.sendMessage(chatId, `ℹ️ Key "${storedGuiKey}" was already not present on server ${serverName}. DB record left unchanged.`);
+                // Key's already gone — record that as its expiry moment.
+                // FullKey/GuiKey/ServerName are left untouched, unlike /removekey.
+                await db.execute('UPDATE UserKeys SET ExpiredAt = NOW() WHERE FullKey = ?', [row.FullKey]);
+                await bot.sendMessage(chatId, `ℹ️ Key "${storedGuiKey}" was already not present on server ${serverName}. ExpiredAt set to now; rest of the DB record left unchanged.`);
                 return;
             }
 
@@ -132,14 +141,16 @@ module.exports = function registerRemoveKeyExpiredCommand(bot, deps) {
             } catch (err) {
                 const errMsg = err.response ? `HTTP ${err.response.status} ${err.response.statusText}` : err.message;
                 if (err.response && err.response.status === 404) {
-                    await bot.sendMessage(chatId, `ℹ️ Server 404 (already gone). "${storedGuiKey}" was not on the server. DB record left unchanged.`);
+                    await db.execute('UPDATE UserKeys SET ExpiredAt = NOW() WHERE FullKey = ?', [row.FullKey]);
+                    await bot.sendMessage(chatId, `ℹ️ Server 404 (already gone). "${storedGuiKey}" was not on the server. ExpiredAt set to now; rest of the DB record left unchanged.`);
                     return;
                 }
                 await bot.sendMessage(chatId, `❌ Failed to remove key on server: ${errMsg}`);
                 return;
             }
 
-            await bot.sendMessage(chatId, `✅ Key "${storedGuiKey}" removed from server ${serverName}. DB record left unchanged.`);
+            await db.execute('UPDATE UserKeys SET ExpiredAt = NOW() WHERE FullKey = ?', [row.FullKey]);
+            await bot.sendMessage(chatId, `✅ Key "${storedGuiKey}" removed from server ${serverName}. ExpiredAt set to now; rest of the DB record left unchanged.`);
 
         } catch (error) {
             console.error("/removekeyexpired error:", error);

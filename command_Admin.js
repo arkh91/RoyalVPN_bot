@@ -35,6 +35,10 @@
 
 const VALID_ROLES = ['superadmin', 'admin', 'moderator'];
 
+const registry = require('./commandRegistry');
+registry.register('/admincommand add|remove|list|status', 'manage the Admins table', ['superadmin']);
+registry.register('/userbalance <username>', '', ['superadmin', 'admin']);
+
 // Usage:
 //   resolveTarget('@someuser', db) -> { userId, username } or null
 //   resolveTarget('123456789', db) -> { userId, username } or null
@@ -180,7 +184,7 @@ module.exports = function registerAdminCommand(bot, deps) {
 
                 const { Role, IsActive } = adminRow[0];
                 const statusText = IsActive ? 'Active' : 'Not Active';
-                let message = `👑 Admins:\n\n`;
+		let message = `👑 Admins:\n\n`;
                  message +=
                     `👤 ${displayName(target)} (\`${target.userId}\`)\n` +
                     `Role: ${Role}\n` +

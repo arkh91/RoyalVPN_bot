@@ -1,0 +1,9 @@
+{
+  "payment_status": "finished",
+  "pay_amount": 0.001,
+  "pay_currency": "BTC",
+  "price_amount": 50.00,
+  "amount": 50.00,
+  "order_id": "1234567890-testABC"
+}
+

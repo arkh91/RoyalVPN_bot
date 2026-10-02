@@ -9,9 +9,152 @@
 //       KeyExists, SERVERS, axios, https, mainMenu, waitingForKey
 //   });
 const { getKeysUsage, formatBytes } = require('./getKeysUsage');
+const { sendPaymentMenu } = require('./payment');
+
+/**
+ * node-telegram-bot-api always sets err.code to the generic 'ETELEGRAM'
+ * for ANY rejected API call — a bad HTML tag, a too-long message, a
+ * blocked user, all look identical from err.code alone. The actual
+ * reason Telegram gave lives at err.response.body.description.
+ *
+ * Usage:
+ *   catch (err) { await bot.sendMessage(chatId, `Error: ${telegramErrorDetail(err)}`); }
+ */
+function telegramErrorDetail(err) {
+    return err?.response?.body?.description || err?.message || err?.code || 'Unknown error';
+}
+
+/**
+ * Usage:
+ *   for (const part of messages) await sendHtmlPartSafely(bot, chatId, part);
+ *
+ * Sends one already-built HTML message. If Telegram rejects it for an
+ * entity-parsing reason (e.g. "can't parse entities: Can't find end tag
+ * corresponding to start tag 'code'"), this:
+ *   1. Logs the exact text that failed, in full, to the console — that's
+ *      the fastest way to actually SEE which tag broke and why, rather
+ *      than guessing from the error message alone.
+ *   2. Falls back to sending the SAME text with every HTML tag stripped
+ *      (plain text, no parse_mode), so the admin still gets the
+ *      information instead of a hard failure.
+ * Any other kind of error (network, rate limit, etc.) is re-thrown as-is
+ * so it's still caught by the handler's own try/catch.
+ */
+async function sendHtmlPartSafely(bot, chatId, part, extraOptions = {}) {
+    try {
+        await bot.sendMessage(chatId, part, { parse_mode: 'HTML', ...extraOptions });
+    } catch (err) {
+        const detail = telegramErrorDetail(err);
+        if (!/can't parse entities/i.test(detail)) throw err;
+
+        console.error('HTML parse error — exact text that failed to send:\n' + part);
+        console.error('Telegram said:', detail);
+
+        const plain = part.replace(/<[^>]+>/g, '');
+        await bot.sendMessage(
+            chatId,
+            `⚠️ (formatting removed — Telegram rejected the HTML: ${detail})\n\n${plain}`
+        );
+    }
+}
 const registerKeyStatusCommand = require('./keystatus_handler');
 const registerKsCommand = require('./ks_handler');
+const registry = require('./commandRegistry');
+const { tokenize, extractCurrency, formatMoney, validateAmount } = require('./currency');
+const creditAccount = require('./db/creditAccount');
+const { waitingForReferralCode } = require('./referral_handler');
+const { getReferralInfo, setReferredBy } = require('./db/referral');
 
+// Everything below shows up in /admin, grouped by the 4th argument (category).
+// Usage strings show the exact syntax an admin types; plain commands with
+// [usd|rial] print their usage when called without arguments.
+registry.register('/sendMessage <UserID> "<msg>"', 'sends a message to a user as the bot', ['superadmin', 'admin'], 'Admin');
+
+registry.register('/userbalance <username>', "shows a user's USD and Rial balance", ['superadmin', 'admin'], 'Account');
+registry.register('/userbalanceuserID <UserID>', "shows a user's USD and Rial balance, by UserID", ['superadmin', 'admin'], 'Account');
+registry.register('/usernameADDbalance <usd|rial> <username> <amount>', 'adds USD or Rial to a user by username (no args = usage)', ['superadmin', 'admin'], 'Account');
+registry.register('/useridADDbalance <usd|rial> <UserID> <amount>', 'adds USD or Rial to a user by UserID (no args = usage)', ['superadmin', 'admin'], 'Account');
+
+registry.register('/keyusername <username>', "lists a user's Outline + WireGuard keys (last 60 days or still active)", ['superadmin', 'admin'], 'Keys');
+registry.register('/keyuserid <UserID|username>', "lists a user's Outline + WireGuard keys from the last 31 days", ['superadmin', 'admin'], 'Keys');
+
+registry.register('/expiredkeys', 'Outline keys issued exactly 30 days ago', ['superadmin', 'admin'], '[Outline]');
+registry.register('/expiredkeysnotify', 'Outline keys that expired today and are still on the server; DMs those users', ['superadmin', 'admin'], '[Outline]');
+registry.register('/removekey <key>', 'removes an Outline key from the server AND DB', ['superadmin', 'admin'], '[Outline]');
+registry.register('/updatekey "<oldkey>" "<newkey>"', 'replaces an Outline key in the DB (both keys in double quotes)', ['superadmin', 'admin'], '[Outline]');
+
+/**
+ * A wg_clients row counts as "active" when none of its lifecycle flags
+ * say otherwise. Unlike Outline keys — where "still active" can only be
+ * learned by calling the server's API (see getUsageMapCached below) —
+ * wg_clients tracks this directly via its own is_active/is_expired/
+ * is_suspended/is_deleted columns, so no network call is needed here.
+ *
+ * Usage:
+ *   isWgClientActive(wgRow) // -> true / false
+ */
+function isWgClientActive(client) {
+    return !!client.is_active && !client.is_expired && !client.is_suspended && !client.is_deleted;
+}
+
+/**
+ * Formats a wg_clients row's usage straight from ITS OWN stored
+ * total_bytes / max_data_limit columns. This is the "usage displayed
+ * based on the database table" behavior for WireGuard: no live API
+ * round-trip like Outline's getKeysUsage() — WireGuard usage is already
+ * tracked in the DB (kept current by whatever process updates
+ * rx_bytes/tx_bytes elsewhere), so we just read it.
+ *
+ * Usage:
+ *   formatWgUsageLine(wgRow)
+ *   // -> "1.2 GB/50 GB"  or  "3 MB (no limit)"  or  "Expired (1.2 GB)"
+ */
+function formatWgUsageLine(client) {
+    const usedBytes = client.total_bytes != null
+        ? Number(client.total_bytes)
+        : Number(client.rx_bytes || 0) + Number(client.tx_bytes || 0);
+    const used = formatBytes(usedBytes);
+
+    if (client.is_deleted) return `Deleted (${used})`;
+    if (client.is_expired) return `Expired (${used})`;
+    if (client.is_suspended) return `Suspended (${used})`;
+    if (!client.is_active) return `Inactive (${used})`;
+
+    return client.max_data_limit
+        ? `${used}/${formatBytes(Number(client.max_data_limit))}`
+        : `${used} (no limit)`;
+}
+
+/**
+ * wg_clients has no single "full config" column — private_key, address,
+ * dns, public_key, endpoint and allowed_ips are stored as separate
+ * columns (see db/WGKeyCreation.js's saveClientToDB). This rebuilds the
+ * exact .conf text from those columns, the same shape the customer
+ * received when the key was issued, so an admin can tap-to-copy it
+ * straight out of Telegram to test the key themselves.
+ *
+ * PersistentKeepalive isn't stored anywhere (the WireGuard server's
+ * /create response never included it), so it's appended as a fixed
+ * line here — 25 seconds is the standard keepalive for clients behind
+ * NAT, and it's harmless to include even for clients that don't need it.
+ *
+ * Usage:
+ *   const configText = buildWgConfigText(wgRow);   // wgRow from a `SELECT ... FROM wg_clients` query
+ *   bot.sendMessage(chatId, `<pre>${escapeHtml(configText)}</pre>`, { parse_mode: 'HTML' });
+ */
+function buildWgConfigText(client) {
+    return (
+        `[Interface]\n` +
+        `PrivateKey = ${client.private_key}\n` +
+        `Address = ${client.address}\n` +
+        `DNS = ${client.dns}\n\n` +
+        `[Peer]\n` +
+        `PublicKey = ${client.public_key}\n` +
+        `Endpoint = ${client.endpoint}\n` +
+        `AllowedIPs = ${client.allowed_ips}\n` +
+        `PersistentKeepalive = 25`
+    );
+}
 
 module.exports = function registerCommands(bot, deps) {
     const {
@@ -24,8 +167,7 @@ module.exports = function registerCommands(bot, deps) {
         axios,
         https,
         mainMenu,
-        waitingForKey,
-        getNowPaymentsInvoiceStatus
+        waitingForKey
     } = deps;
 
     const ADMIN_ID = 542797568;
@@ -33,9 +175,29 @@ module.exports = function registerCommands(bot, deps) {
     registerKeyStatusCommand(bot, deps);
 //    registerAdminCommand(bot, { db });
     // ---------------------------------------------------------------------
-    // /start
+    // /start [payload]
+    //
+    // The [payload] is Telegram's deep-link start parameter: a link like
+    // https://t.me/<BotUsername>?start=ZG26KV sends this bot the message
+    // "/start ZG26KV" the moment the person opens the chat — this is a
+    // built-in Telegram Bot API behaviour, not something referral_handler.js
+    // constructs. See referral_handler.js's /referral menu for where the
+    // link itself gets built and shown to the inviter.
+    //
+    // First-touch only: this ONLY assigns an inviter if the person doesn't
+    // already have one. Manually typing a code via /referral stays freely
+    // editable at any time (see db/referral.js's setReferredBy) — but a
+    // stray link click is more likely to be incidental than a deliberate
+    // re-assignment, so it never silently overwrites an existing
+    // relationship for someone who already has one set.
+    //
+    // Never blocks onboarding: an invalid, expired, or self/cyclic code in
+    // the payload is logged and otherwise ignored — the welcome message
+    // and main menu always still send.
     // ---------------------------------------------------------------------
-    bot.onText(/\/start/, async (msg) => {
+    bot.onText(/^\/start(?:\s+(\S+))?/, async (msg, match) => {
+        const payload = match && match[1] ? match[1].trim() : null;
+
         try {
             await insertUser(msg.from);
             await insertVisit(msg.from.id);
@@ -43,8 +205,26 @@ module.exports = function registerCommands(bot, deps) {
             console.error('Error inserting user:', err);
         }
 
+        let referralGreeting = '';
+        if (payload) {
+            try {
+                const info = await getReferralInfo(db, msg.from.id);
+                if (!info.referredByUserId) {
+                    const result = await setReferredBy(db, msg.from.id, payload);
+                    if (result.ok) {
+                        referralGreeting = `🎉 You were invited by ${result.inviterLabel}!\n\n`;
+                    }
+                    // An invalid code, a self-invite, or a cycle just means
+                    // no inviter gets set — no error shown, onboarding continues.
+                }
+            } catch (err) {
+                console.error('Deep-link referral assignment failed:', err);
+            }
+        }
+
         bot.sendMessage(
             msg.chat.id,
+            referralGreeting +
             "Protect your privacy with a high-speed VPN built for security, reliability, and ease of use. Our premium servers ensure fast, encrypted connections worldwide—no logs, no limits. Whether you're streaming, working, or browsing, stay safe and anonymous with just one click.\n\nPlease choose your country of residence:",
             mainMenu
         );
@@ -53,18 +233,9 @@ module.exports = function registerCommands(bot, deps) {
     // ---------------------------------------------------------------------
     // /payment
     // ---------------------------------------------------------------------
+    // Usage: user sends /payment -> Direct / Crypto menu (see payment/menus.js)
     bot.onText(/\/payment/, (msg) => {
-        const chatId = msg.chat.id;
-
-        bot.sendMessage(chatId, '💳 Please choose a payment method:', {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: 'Direct (Credit Card)', callback_data: 'pay_direct' }],
-                    [{ text: 'Crypto Currency', callback_data: 'pay_nowpayment' }],
-                    [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
-                ]
-            }
-        });
+        sendPaymentMenu(bot, msg.chat.id);
     });
 
     // ---------------------------------------------------------------------
@@ -78,7 +249,7 @@ module.exports = function registerCommands(bot, deps) {
         const lastName = msg.from.last_name || '';
 
         const sql = `
-            SELECT CurrentBalance
+            SELECT CurrentBalance, IRC
             FROM accounts
             WHERE UserID = ?
             LIMIT 1
@@ -87,9 +258,11 @@ module.exports = function registerCommands(bot, deps) {
         try {
             const [results] = await db.query(sql, [userId]);
 
-            let balance = 'Not found';
+            let balanceUsd = 'Not found';
+            let balanceIrc = 'Not found';
             if (results && results.length > 0) {
-                balance = `$${Number(results[0].CurrentBalance).toFixed(2)}`;
+                balanceUsd = formatMoney('USD', results[0].CurrentBalance);
+                balanceIrc = formatMoney('IRC', results[0].IRC);
             }
 
             const message =
@@ -97,7 +270,8 @@ module.exports = function registerCommands(bot, deps) {
                 `🆔 *User ID:* \`${userId}\`\n` +
                 `🔖 *Username:* ${username.startsWith('@') ? username : '@' + username}\n` +
                 `📛 *Full Name:* ${firstName} ${lastName}\n` +
-                `💰 *Balance:* ${balance}`;
+                `💰 *Balance (USD):* ${balanceUsd}\n` +
+                `🇮🇷 *Balance (Rial):* ${balanceIrc}`;
 
             bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
         } catch (err) {
@@ -114,57 +288,18 @@ module.exports = function registerCommands(bot, deps) {
         const userId = msg.from.id; // Telegram user ID
 
         try {
-            // get all user payments
-            const [payments] = await db.execute(
-                "SELECT * FROM payments WHERE UserID = ?",
-                [userId]
-            );
-
-            let balance = 0;
-            const updates = [];
-
-            for (const payment of payments) {
-                if (payment.Status === "finished") {
-                    balance += parseFloat(payment.Amount || 0);
-                    continue;
-                }
-
-                // 🔍 check NowPayments invoice status
-                const invoiceStatus = await getNowPaymentsInvoiceStatus(payment.PaymentID);
-
-                if (!invoiceStatus) continue;
-
-                if (invoiceStatus.status === "finished") {
-                    // update payments table
-                    await db.execute(
-                        "UPDATE payments SET Status = 'finished' WHERE OrderID = ?",
-                        [payment.OrderID]
-                    );
-
-                    const amount = parseFloat(invoiceStatus.price_amount) || 0;
-                    balance += amount;
-
-                    // update accounts table
-                    await db.execute(
-                        "UPDATE accounts SET CurrentBalance = COALESCE(CurrentBalance,0)+? WHERE UserID=?",
-                        [amount, userId]
-                    );
-
-                    updates.push({ OrderID: payment.OrderID, status: "finished", amount });
-                }
-            }
-
             // get current balance from accounts
             const [[account]] = await db.execute(
-                "SELECT CurrentBalance FROM accounts WHERE UserID = ?",
+                "SELECT CurrentBalance, IRC FROM accounts WHERE UserID = ?",
                 [userId]
             );
 
-            const finalBalance = account?.CurrentBalance || balance;
+            const finalBalance = account?.CurrentBalance || 0;
+            const ircBalance = account?.IRC || 0;
 
             bot.sendMessage(
                 chatId,
-                `🆔 Your UserID: ${userId}\n💰 Balance: ${finalBalance}\n\nRecent updates: ${updates.length}`
+                `🆔 Your UserID: ${userId}\n💰 USD Balance: ${formatMoney('USD', finalBalance)}\n🇮🇷 Rial Balance: ${formatMoney('IRC', ircBalance)}`
             );
         } catch (error) {
             console.error("❌ Error in /userid:", error);
@@ -193,6 +328,11 @@ module.exports = function registerCommands(bot, deps) {
             return;
         }
 
+        // A plain-text invite code being typed for /referral is handled
+        // entirely by referral_handler.js's own message listener — don't
+        // also forward it to the admin as a stray message.
+        if (text && !text.startsWith('/') && waitingForReferralCode.has(chatId)) return;
+
         // Ignore other bot commands (anything starting with "/")
         if (text && text.startsWith('/')) return;
 
@@ -210,7 +350,7 @@ module.exports = function registerCommands(bot, deps) {
 // ---------------------------------------------------------------------
     // /userbalance <username>   (superadmin/admin only)
     // ---------------------------------------------------------------------
-    bot.onText(/^\/userbalance (.+)$/, async (msg, match) => {
+/*    bot.onText(/^\/userbalance (.+)$/, async (msg, match) => {
         const chatId = msg.chat.id;
         const senderId = msg.from.id;
 
@@ -228,7 +368,7 @@ module.exports = function registerCommands(bot, deps) {
         const username = match[1].trim().replace(/^@/, '');
 
         const sql = `
-            SELECT UserID, FirstName, LastName, Username, CurrentBalance
+            SELECT UserID, FirstName, LastName, Username, CurrentBalance, IRC
             FROM accounts
             WHERE LOWER(Username) = LOWER(?)
             LIMIT 1
@@ -243,17 +383,7 @@ module.exports = function registerCommands(bot, deps) {
             }
 
             const user = results[0];
-/*
-            const response =
-                `💳 Balance Info:
-        UserID: \${user.UserID}\
-        FirstName: ${user.FirstName || "-"}
-        LastName: ${user.LastName || "-"}
-        Username: ${user.Username ? '@' + user.Username : "-"}
-        CurrentBalance: $${Number(user.CurrentBalance).toFixed(2)}`;
 
-            bot.sendMessage(chatId, response);
-*/
             const response =
                 `💳 *Balance Info:*\n` +
                 `UserID: \`${user.UserID}\`\n` +
@@ -266,6 +396,73 @@ module.exports = function registerCommands(bot, deps) {
         } catch (err) {
             console.error("DB Error:", err);
             bot.sendMessage(chatId, "❌ Database error.");
+        }
+    });
+*/
+// ---------------------------------------------------------------------
+    // /userbalance <username>   (superadmin/admin only)
+    // ---------------------------------------------------------------------
+    bot.onText(/^\/userbalance(?:\s+(.+))?$/, async (msg, match) => {
+        const chatId = msg.chat.id;
+        const senderId = msg.from.id;
+
+        // --- superadmin / admin gate (moderator excluded) ---
+        const [adminRows] = await db.execute(
+            'SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 LIMIT 1',
+            [senderId]
+        );
+
+        if (adminRows.length === 0 || !['superadmin', 'admin'].includes(adminRows[0].Role)) {
+            await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
+            return;
+        }
+
+        // --- No argument: show usage instead of silently doing nothing ---
+        if (!match[1]) {
+            await bot.sendMessage(chatId, '⚠️ Usage: /userbalance <username>\nExample: /userbalance parastoo_dhr');
+            return;
+        }
+
+        const username = match[1].trim().replace(/^@/, '');
+
+        const sql = `
+            SELECT UserID, FirstName, LastName, Username, CurrentBalance, IRC
+            FROM accounts
+            WHERE LOWER(Username) = LOWER(?)
+            LIMIT 1
+        `;
+
+        try {
+            const [results] = await db.query(sql, [username]);
+
+            if (!results || results.length === 0) {
+                bot.sendMessage(chatId, `⚠️ No account found for username: ${username}`);
+                return;
+            }
+
+            const user = results[0];
+
+            // HTML instead of Markdown — usernames containing _ * ` [ (very
+            // common — e.g. "parastoo_dhr") break Markdown V1 parsing
+            // outright, which is what was causing the silent "no output"
+            // here: Telegram rejects the whole sendMessage call, the
+            // exception lands in catch, and the query had actually
+            // succeeded the whole time.
+            const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+            const response =
+                `💳 <b>Balance Info</b>\n` +
+                `UserID: <code>${user.UserID}</code>\n` +
+                `FirstName: ${escapeHtml(user.FirstName || "-")}\n` +
+                `LastName: ${escapeHtml(user.LastName || "-")}\n` +
+                `Username: ${user.Username ? '@' + escapeHtml(user.Username) : "-"}\n` +
+                `CurrentBalance: ${formatMoney('USD', user.CurrentBalance)}\n` +
+                `IRC: ${formatMoney('IRC', user.IRC)}`;
+
+            bot.sendMessage(chatId, response, { parse_mode: 'HTML' });
+        } catch (err) {
+            console.error("Error:", err);
+            bot.sendMessage(chatId, `❌ Error: ${err.code || err.message}`);
         }
     });
 
@@ -298,7 +495,7 @@ module.exports = function registerCommands(bot, deps) {
             }
 
             const sql = `
-                SELECT UserID, FirstName, LastName, Username, CurrentBalance
+                SELECT UserID, FirstName, LastName, Username, CurrentBalance, IRC
                 FROM accounts
                 WHERE UserID = ?
                 LIMIT 1
@@ -323,7 +520,8 @@ module.exports = function registerCommands(bot, deps) {
                 🆔 <b>User ID:</b> <code>${user.UserID}</code>
                 🔖 <b>Username:</b> ${user.Username ? '@' + escapeHtml(user.Username) : "-"}
                 📛 <b>Full Name:</b> ${escapeHtml(user.FirstName || "-")} ${escapeHtml(user.LastName || "-")}
-                💰 <b>Balance:</b> $${Number(user.CurrentBalance).toFixed(2)}`;
+                💰 <b>Balance (USD):</b> ${formatMoney('USD', user.CurrentBalance)}
+                🇮🇷 <b>Balance (Rial):</b> ${formatMoney('IRC', user.IRC)}`;
 
             await bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
         } catch (err) {
@@ -333,123 +531,18 @@ module.exports = function registerCommands(bot, deps) {
     });
 
     // ---------------------------------------------------------------------
-    // /usernameADDbalance <username> <amount>   (admin only)
+    // /usernameADDbalance <usd|rial> <username> <amount>   (admin only)
+    // Plain /usernameADDbalance (or any wrong syntax) prints the usage.
+    // The usd/rial word may sit anywhere among the arguments.
     // ---------------------------------------------------------------------
-    bot.onText(/^\/usernameADDbalance (.+) (.+)$/, async (msg, match) => {
+    bot.onText(/^\/usernameADDbalance(?:\s+([\s\S]+))?$/i, async (msg, match) => {
         const chatId = msg.chat.id;
         const senderId = msg.from.id;
 
-        const [countRows] = await db.execute(
-            `SELECT COUNT(AdminID) AS cnt
-             FROM Admins
-             WHERE UserID = ?
-               AND Role IN ('admin', 'superadmin')
-               AND IsActive = 1`,
-            [senderId]
-        );
-
-        if (countRows[0].cnt === 0) {
-            await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
-            return;
-        }
-
-        const username = match[1].trim().replace(/^@/, '');
-        const amount = parseFloat(match[2]);
-
-        if (isNaN(amount) || amount <= 0) {
-            bot.sendMessage(chatId, "⚠️ Invalid amount. Example: /usernameADDbalance arkh916058 5");
-            return;
-        }
-
-        try {
-            const [adminRows] = await db.execute(
-                'SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 LIMIT 1',
-                [senderId]
-            );
-
-            if (adminRows.length === 0) {
-                await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
-                return;
-            }
-
-            const role = adminRows[0].Role;
-            if (role !== 'admin' && role !== 'superadmin') {
-                await bot.sendMessage(chatId, '❌ Error: You do not have permission.');
-                return;
-            }
-
-            const [users] = await db.query(
-                `SELECT UserID, CurrentBalance FROM accounts WHERE LOWER(Username) = LOWER(?) LIMIT 1`,
-                [username]
-            );
-
-            if (!users || users.length === 0) {
-                bot.sendMessage(chatId, `⚠️ No account found for username: ${username}`);
-                return;
-            }
-
-            const user = users[0];
-            const userId = user.UserID;
-
-            const now = new Date();
-            const pad = n => (n < 10 ? '0' + n : n);
-            const ddmmyyyy = `${pad(now.getDate())}${pad(now.getMonth() + 1)}${now.getFullYear()}`;
-            const hhmmss = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-            const orderId = `${ddmmyyyy}-${hhmmss}`;
-            const paymentId = orderId;
-            const invoiceId = orderId;
-
-            const insertQuery = `
-                INSERT INTO payments
-                (UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount, Currency, AmountPaidInUSD, CurrentRateToUSD, Status, Comments, OrderID, PaymentID, invoiceID)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `;
-            const insertParams = [
-                userId,
-                now,
-                'Rial',
-                0,
-                'Rial',
-                amount,
-                0,
-                'Pending',
-                'Pending via TelegramBot',
-                orderId,
-                paymentId,
-                invoiceId
-            ];
-            await db.query(insertQuery, insertParams);
-
-            const updateQuery = `
-                UPDATE accounts
-                SET CurrentBalance = CurrentBalance + ?
-                WHERE UserID = ?
-            `;
-            await db.query(updateQuery, [amount, userId]);
-
-            const [updatedUser] = await db.query(
-                `SELECT CurrentBalance FROM accounts WHERE UserID = ? LIMIT 1`,
-                [userId]
-            );
-
-            const newBalance = updatedUser[0].CurrentBalance;
-
-            bot.sendMessage(
-                chatId,
-                `✅ Successfully added $${amount.toFixed(2)} to @${username}'s balance.\n💰 New Balance: $${Number(newBalance).toFixed(2)}`
-            );
-        } catch (err) {
-            console.error("DB Error:", err);
-            bot.sendMessage(chatId, "❌ Database error.");
-        }
-    });
-
-    // ---------------------------------------------------------------------
-    // /useridADDbalance <UserID> <amount>   (admin only)
-    // ---------------------------------------------------------------------
-    bot.onText(/\/useridADDbalance (\d+) (\d+(\.\d+)?)/, async (msg, match) => {
-        const chatId = msg.chat.id;
-        const senderId = msg.from.id;
+        const USAGE =
+            '⚠️ Usage:\n' +
+            '/usernameADDbalance <usd|rial> <username> <amount>\n\n' +
+            'Examples:\n/usernameADDbalance usd arkh916058 2\n/usernameADDbalance rial arkh916058 180000';
 
         try {
             const [countRows] = await db.execute(
@@ -466,78 +559,115 @@ module.exports = function registerCommands(bot, deps) {
                 return;
             }
 
-            const userId = parseInt(match[1]);
-            const amount = parseFloat(match[2]);
+            const { currency, rest } = extractCurrency(tokenize(match[1]));
+            if (!currency || rest.length !== 2 || !/^@?[A-Za-z0-9_]+$/.test(rest[0]) || !/^\d+(?:\.\d+)?$/.test(rest[1])) {
+                await bot.sendMessage(chatId, USAGE);
+                return;
+            }
 
-            if (isNaN(userId) || isNaN(amount) || amount <= 0) {
-                bot.sendMessage(chatId, "⚠️ Invalid usage. Example: /useridADDbalance 12345 5");
+            const username = rest[0].replace(/^@/, '');
+            const amount = parseFloat(rest[1]);
+
+            const amountError = validateAmount(currency, amount);
+            if (amountError) {
+                await bot.sendMessage(chatId, `⚠️ ${amountError}\n\n${USAGE}`);
                 return;
             }
 
             const [users] = await db.query(
-                `SELECT UserID, Username, CurrentBalance FROM accounts WHERE UserID = ? LIMIT 1`,
+                `SELECT UserID FROM accounts WHERE LOWER(Username) = LOWER(?) LIMIT 1`,
+                [username]
+            );
+
+            if (!users || users.length === 0) {
+                await bot.sendMessage(chatId, `⚠️ No account found for username: ${username}`);
+                return;
+            }
+
+            const userId = users[0].UserID;
+
+            // payments row + balance update in one transaction (see db/creditAccount.js)
+            const newBalance = await creditAccount(db, userId, amount, currency);
+
+            await bot.sendMessage(
+                chatId,
+                `✅ Successfully added ${formatMoney(currency, amount)} to @${username}'s balance.\n💰 New Balance: ${formatMoney(currency, newBalance)}`
+            );
+        } catch (err) {
+            console.error("DB Error:", err);
+            await bot.sendMessage(chatId, "❌ Database error.");
+        }
+    });
+
+    // ---------------------------------------------------------------------
+    // /useridADDbalance <usd|rial> <UserID> <amount>   (admin only)
+    // Plain /useridADDbalance (or any wrong syntax) prints the usage.
+    // The usd/rial word may sit anywhere among the arguments.
+    // ---------------------------------------------------------------------
+    bot.onText(/^\/useridADDbalance(?:\s+([\s\S]+))?$/i, async (msg, match) => {
+        const chatId = msg.chat.id;
+        const senderId = msg.from.id;
+
+        const USAGE =
+            '⚠️ Usage:\n' +
+            '/useridADDbalance <usd|rial> <UserID> <amount>\n\n' +
+            'Examples:\n/useridADDbalance usd 123456789 2\n/useridADDbalance rial 123456789 180000';
+
+        try {
+            const [countRows] = await db.execute(
+                `SELECT COUNT(AdminID) AS cnt
+                 FROM Admins
+                 WHERE UserID = ?
+                   AND Role IN ('admin', 'superadmin')
+                   AND IsActive = 1`,
+                [senderId]
+            );
+
+            if (countRows[0].cnt === 0) {
+                await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
+                return;
+            }
+
+            const { currency, rest } = extractCurrency(tokenize(match[1]));
+            if (!currency || rest.length !== 2 || !/^\d+$/.test(rest[0]) || !/^\d+(?:\.\d+)?$/.test(rest[1])) {
+                await bot.sendMessage(chatId, USAGE);
+                return;
+            }
+
+            const userId = parseInt(rest[0], 10);
+            const amount = parseFloat(rest[1]);
+
+            const amountError = validateAmount(currency, amount);
+            if (amountError) {
+                await bot.sendMessage(chatId, `⚠️ ${amountError}\n\n${USAGE}`);
+                return;
+            }
+
+            const [users] = await db.query(
+                `SELECT UserID, Username FROM accounts WHERE UserID = ? LIMIT 1`,
                 [userId]
             );
 
             if (!users || users.length === 0) {
-                bot.sendMessage(chatId, `⚠️ No account found for UserID: ${userId}`);
+                await bot.sendMessage(chatId, `⚠️ No account found for UserID: ${userId}`);
                 return;
             }
 
             const user = users[0];
 
-            const now = new Date();
-            const pad = n => (n < 10 ? '0' + n : n);
-            const ddmmyyyy = `${pad(now.getDate())}${pad(now.getMonth() + 1)}${now.getFullYear()}`;
-            const hhmmss = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-            const orderId = `${ddmmyyyy}-${hhmmss}`;
-            const paymentId = orderId;
-            const invoiceId = orderId;
+            // payments row + balance update in one transaction (see db/creditAccount.js)
+            const newBalance = await creditAccount(db, userId, amount, currency);
 
-            const insertQuery = `
-                INSERT INTO payments
-                (UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount, Currency, AmountPaidInUSD, CurrentRateToUSD, Status, Comments, OrderID, PaymentID, invoiceID)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `;
-            const insertParams = [
-                userId,
-                now,
-                'Rial',
-                0,
-                'Rial',
-                amount,
-                0,
-                'Pending',
-                'Pending via TelegramBot',
-                orderId,
-               paymentId,
-                invoiceId
-            ];
-            await db.query(insertQuery, insertParams);
-
-            const updateQuery = `
-                UPDATE accounts
-                SET CurrentBalance = CurrentBalance + ?
-                WHERE UserID = ?
-            `;
-            await db.query(updateQuery, [amount, userId]);
-
-            const [updatedUser] = await db.query(
-                `SELECT CurrentBalance FROM accounts WHERE UserID = ? LIMIT 1`,
-                [userId]
-            );
-
-            const newBalance = updatedUser[0].CurrentBalance;
-
-            bot.sendMessage(
+            await bot.sendMessage(
                 chatId,
-                `✅ Successfully added $${amount.toFixed(2)} to ${user.Username ? '@' + user.Username : 'UserID ' + userId}'s balance.\n💰 New Balance: $${Number(newBalance).toFixed(2)}`
+                `✅ Successfully added ${formatMoney(currency, amount)} to ${user.Username ? '@' + user.Username : 'UserID ' + userId}'s balance.\n💰 New Balance: ${formatMoney(currency, newBalance)}`
             );
         } catch (err) {
             console.error("DB Error:", err);
-            bot.sendMessage(chatId, "❌ Database error.");
+            await bot.sendMessage(chatId, "❌ Database error.");
         }
     });
+
 
     // ---------------------------------------------------------------------
     // /sendMessage <userID> "<message>"   (admin only)
@@ -616,7 +746,21 @@ module.exports = function registerCommands(bot, deps) {
                 'SELECT FullKey, GuiKey, ServerName, IssuedAt FROM UserKeys WHERE UserID = ? ORDER BY IssuedAt DESC',
                 [userId]
             );
-            if (keyRows.length === 0) {
+
+            // WireGuard side of the same lookup — same UserID, a different
+            // table. is_deleted = 1 rows are excluded outright (soft-deleted,
+            // not just expired/suspended).
+            const [wgRows] = await db.execute(
+                `SELECT name, is_active, is_expired, is_suspended, is_deleted,
+                        created_at, total_bytes, rx_bytes, tx_bytes, max_data_limit,
+                        private_key, public_key, address, dns, allowed_ips, endpoint
+                 FROM wg_clients
+                 WHERE UserID = ? AND is_deleted = 0
+                 ORDER BY created_at DESC`,
+                [userId]
+            );
+
+            if (keyRows.length === 0 && wgRows.length === 0) {
                 await bot.sendMessage(chatId, `ℹ️ No keys found for @${targetUsername}`);
                 return;
             }
@@ -660,37 +804,79 @@ module.exports = function registerCommands(bot, deps) {
             const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
             const filtered = enriched.filter(k => k.isActive || new Date(k.IssuedAt) >= sixtyDaysAgo);
 
-            if (filtered.length === 0) {
+            // Same 60-day-or-active rule applied to WireGuard clients —
+            // "active" here comes straight from isWgClientActive() (DB
+            // flags), no API call needed.
+            const wgEnriched = wgRows.map(c => ({
+                name: c.name,
+                createdAt: c.created_at,
+                isActive: isWgClientActive(c),
+                usageText: formatWgUsageLine(c),
+                config: buildWgConfigText(c)
+            }));
+            const wgFiltered = wgEnriched.filter(k => k.isActive || new Date(k.createdAt) >= sixtyDaysAgo);
+
+            if (filtered.length === 0 && wgFiltered.length === 0) {
                 await bot.sendMessage(chatId, `ℹ️ No keys within the last 60 days or still active for @${targetUsername}`);
                 return;
             }
 
             const LIMIT = 50;
             let messages = [];
-            let response = `🔑 Keys for @${targetUsername} (UserID: ${userId}) — ${filtered.length} total:\n\n`;
+            let response = `🔑 Keys for @${targetUsername} (UserID: ${userId})\n\n`;
 
-            filtered.slice(0, LIMIT).forEach((k, i) => {
-                const entry = `${i + 1}. FullKey: <code>${escapeHtml(k.FullKey)}</code>\n   IssuedAt: ${escapeHtml(k.IssuedAt)}\n   Usage: ${escapeHtml(k.usageText)}\n\n`;
-
+            // Appends one entry, splitting into a new Telegram message
+            // whenever the running message would cross Telegram's ~4096
+            // char text limit (kept at 3500 for margin, same as before).
+            const appendChunk = (entry) => {
                 if (response.length + entry.length > 3500) {
                     messages.push(response);
                     response = "";
                 }
                 response += entry;
-            });
+            };
 
-            if (filtered.length > LIMIT) {
-                response += `...(showing ${LIMIT} of ${filtered.length}). For the full list, query the DB directly.`;
+            // --- Outline section ---
+            appendChunk(`🅾️ <b>Outline Keys</b> — ${filtered.length} total:\n\n`);
+            if (filtered.length === 0) {
+                appendChunk(`ℹ️ No Outline keys.\n\n`);
+            } else {
+                filtered.slice(0, LIMIT).forEach((k, i) => {
+                    appendChunk(`${i + 1}. FullKey: <code>${escapeHtml(k.FullKey)}</code>\n   IssuedAt: ${escapeHtml(k.IssuedAt)}\n   Usage: ${escapeHtml(k.usageText)}\n\n`);
+                });
+                if (filtered.length > LIMIT) {
+                    appendChunk(`...(showing ${LIMIT} of ${filtered.length}). For the full list, query the DB directly.\n\n`);
+                }
+            }
+
+            // --- WireGuard section — each entry carries an explicit
+            // "🔌 [WG]" tag so it's unmistakable which protocol a key
+            // belongs to even if this section lands in its own chunk. ---
+            appendChunk(`🔌 <b>WireGuard Keys</b> — ${wgFiltered.length} total:\n\n`);
+            if (wgFiltered.length === 0) {
+                appendChunk(`ℹ️ No WireGuard keys.\n\n`);
+            } else {
+                wgFiltered.slice(0, LIMIT).forEach((k, i) => {
+                    appendChunk(
+                        `${i + 1}. 🔌 <b>[WG]</b> Name: <code>${escapeHtml(k.name)}</code>\n` +
+                        `   CreatedAt: ${escapeHtml(k.createdAt)}\n` +
+                        `   Usage: ${escapeHtml(k.usageText)}\n` +
+                        `<pre>${escapeHtml(k.config)}</pre>\n\n`
+                    );
+                });
+                if (wgFiltered.length > LIMIT) {
+                    appendChunk(`...(showing ${LIMIT} of ${wgFiltered.length}). For the full list, query the DB directly.\n\n`);
+                }
             }
 
             if (response.length > 0) messages.push(response);
 
             for (const part of messages) {
-                await bot.sendMessage(chatId, part, { parse_mode: 'HTML', disable_web_page_preview: true });
+                await sendHtmlPartSafely(bot, chatId, part, { disable_web_page_preview: true });
             }
         } catch (err) {
             console.error('Keyusername error:', err);
-            await bot.sendMessage(chatId, `❌ Error: ${err.code || err.message}`);
+            await bot.sendMessage(chatId, `❌ Error: ${telegramErrorDetail(err)}`);
         }
     });
 
@@ -742,7 +928,19 @@ module.exports = function registerCommands(bot, deps) {
                 [userId]
             );
 
-            if (keyRows.length === 0) {
+            // Same 31-day window applied to WireGuard clients, same UserID,
+            // a different table. is_deleted = 1 excluded outright.
+            const [wgRows] = await db.execute(
+                `SELECT name, is_active, is_expired, is_suspended, is_deleted,
+                        created_at, total_bytes, rx_bytes, tx_bytes, max_data_limit,
+                        private_key, public_key, address, dns, allowed_ips, endpoint
+                 FROM wg_clients
+                 WHERE UserID = ? AND is_deleted = 0 AND created_at >= NOW() - INTERVAL 31 DAY
+                 ORDER BY created_at DESC`,
+                [userId]
+            );
+
+            if (keyRows.length === 0 && wgRows.length === 0) {
                 await bot.sendMessage(chatId, `ℹ️ No keys issued in the last 31 days for ${target}`);
                 return;
             }
@@ -751,6 +949,8 @@ module.exports = function registerCommands(bot, deps) {
 
             // Usage cache: one getKeysUsage() round-trip PER SERVER, no
             // matter how many of this user's keys are on that server.
+            // (WireGuard doesn't need this — its usage comes straight off
+            // the wg_clients row via formatWgUsageLine(), no API call.)
             const usageCache = {};
             const getUsageMapCached = async (serverName) => {
                 if (!usageCache[serverName]) {
@@ -767,35 +967,59 @@ module.exports = function registerCommands(bot, deps) {
             let messages = [];
             let response = `📅 Keys issued in last 31 days for ${target} (UserID: ${userId}):\n\n`;
 
-            for (const [i, row] of keyRows.entries()) {
-                const { FullKey, GuiKey, ServerName, IssuedAt } = row;
-
-                const usageMap = await getUsageMapCached(ServerName);
-                const info = usageMap.get((GuiKey || '').trim());
-                const usageText = info
-                    ? (info.limitBytes
-                        ? `${formatBytes(info.bytes)}/${formatBytes(info.limitBytes)}`
-                        : `${formatBytes(info.bytes)} (no limit)`)
-                    : 'Expired';
-
-                const entry = `${i + 1}. FullKey: <code>${escapeHtml(FullKey)}</code>\n   IssuedAt: ${escapeHtml(IssuedAt)}\n   Usage: ${escapeHtml(usageText)}\n\n`;
-
+            const appendChunk = (entry) => {
                 if (response.length + entry.length > 3500) {
                     messages.push(response);
                     response = "";
                 }
                 response += entry;
+            };
+
+            // --- Outline section ---
+            appendChunk(`🅾️ <b>Outline Keys</b> — ${keyRows.length} total:\n\n`);
+            if (keyRows.length === 0) {
+                appendChunk(`ℹ️ No Outline keys in the last 31 days.\n\n`);
+            } else {
+                for (const [i, row] of keyRows.entries()) {
+                    const { FullKey, GuiKey, ServerName, IssuedAt } = row;
+
+                    const usageMap = await getUsageMapCached(ServerName);
+                    const info = usageMap.get((GuiKey || '').trim());
+                    const usageText = info
+                        ? (info.limitBytes
+                            ? `${formatBytes(info.bytes)}/${formatBytes(info.limitBytes)}`
+                            : `${formatBytes(info.bytes)} (no limit)`)
+                        : 'Expired';
+
+                    appendChunk(`${i + 1}. FullKey: <code>${escapeHtml(FullKey)}</code>\n   IssuedAt: ${escapeHtml(IssuedAt)}\n   Usage: ${escapeHtml(usageText)}\n\n`);
+                }
+            }
+
+            // --- WireGuard section — each entry tagged "🔌 [WG]" so it's
+            // unmistakable which protocol a key belongs to. ---
+            appendChunk(`🔌 <b>WireGuard Keys</b> — ${wgRows.length} total:\n\n`);
+            if (wgRows.length === 0) {
+                appendChunk(`ℹ️ No WireGuard keys in the last 31 days.\n\n`);
+            } else {
+                wgRows.forEach((c, i) => {
+                    appendChunk(
+                        `${i + 1}. 🔌 <b>[WG]</b> Name: <code>${escapeHtml(c.name)}</code>\n` +
+                        `   CreatedAt: ${escapeHtml(c.created_at)}\n` +
+                        `   Usage: ${escapeHtml(formatWgUsageLine(c))}\n` +
+                        `<pre>${escapeHtml(buildWgConfigText(c))}</pre>\n\n`
+                    );
+                });
             }
 
             if (response.length > 0) messages.push(response);
 
             for (const part of messages) {
-                await bot.sendMessage(chatId, part, { parse_mode: 'HTML' });
+                await sendHtmlPartSafely(bot, chatId, part);
             }
 
         } catch (err) {
             console.error('keyuserid error:', err);
-            await bot.sendMessage(chatId, `❌ Error: ${err.code || err.message}`);
+            await bot.sendMessage(chatId, `❌ Error: ${telegramErrorDetail(err)}`);
         }
     });
 
@@ -1031,12 +1255,27 @@ module.exports = function registerCommands(bot, deps) {
     });
 
     // ---------------------------------------------------------------------
-    // /updatekey <OLD_KEY> <NEW_KEY>   (admin only)
+    // /updatekey "<OLD_KEY>" "<NEW_KEY>"   (admin only)
+    //
+    // BOTH keys must be wrapped in double quotes. A key name can contain
+    // spaces (for example a country flag emoji followed by a space), which
+    // the old "split at the first space" parsing mistook for the separator
+    // between the old and the new key. Curly quotes (“ ”), which phones
+    // often insert automatically, are accepted too.
+    //
+    // Only the UserKeys row in the DB is updated; the Outline server itself
+    // is not contacted. The old key is matched against FullKey or GuiKey,
+    // with or without the leading "#" (same tolerance as /removekey).
     // ---------------------------------------------------------------------
-    bot.onText(/\/updatekey\s+([\s\S]+)/, async (msg, match) => {
+    bot.onText(/^\/updatekey(?:\s+([\s\S]+))?$/i, async (msg, match) => {
         const chatId = msg.chat.id;
         const senderId = msg.from.id;
-        const target = match[1].trim();
+
+        const USAGE =
+            '❌ Usage:\n' +
+            '/updatekey "<OLD_KEY>" "<NEW_KEY>"\n\n' +
+            'Both keys must be inside double quotes (a key can contain spaces).\n\n' +
+            'Example:\n/updatekey "ss://…#🇩🇪 Old name" "ss://…#🇩🇪 New name"';
 
         try {
             const [adminRows] = await db.execute(
@@ -1055,23 +1294,17 @@ module.exports = function registerCommands(bot, deps) {
                 return;
             }
 
-            const firstSpaceIndex = target.indexOf(' ');
-            if (firstSpaceIndex === -1) {
-                await bot.sendMessage(
-                    chatId,
-                    '❌ Usage:\n/updatekey <OLD_KEY> <NEW_KEY>'
-                );
+            const quoted = (match[1] || '').trim().match(/^["“”]([^"“”]+)["“”]\s+["“”]([^"“”]+)["“”]$/);
+            if (!quoted) {
+                await bot.sendMessage(chatId, USAGE);
                 return;
             }
 
-            const oldKey = target.substring(0, firstSpaceIndex).trim();
-            const newKey = target.substring(firstSpaceIndex + 1).trim();
+            const oldKey = quoted[1].trim();
+            const newKey = quoted[2].trim();
 
             if (!oldKey || !newKey) {
-                await bot.sendMessage(
-                    chatId,
-                    '❌ Both old key and new key are required.'
-                );
+                await bot.sendMessage(chatId, USAGE);
                 return;
             }
 
@@ -1082,31 +1315,31 @@ module.exports = function registerCommands(bot, deps) {
 
             const newGuiKey = extractGuiKey(newKey);
 
+            // The old key may have been typed with or without the leading "#".
+            const altOldKey = oldKey.startsWith('#') ? oldKey.substring(1).trim() : ('#' + oldKey);
+
             const [rows] = await db.execute(
                 `SELECT UserID, ServerName
                  FROM UserKeys
-                 WHERE FullKey = ? OR GuiKey = ?
+                 WHERE FullKey = ? OR GuiKey = ? OR GuiKey = ?
                  LIMIT 1`,
-                [oldKey, oldKey]
+                [oldKey, oldKey, altOldKey]
             );
 
             if (rows.length === 0) {
-                await bot.sendMessage(chatId, '❌ Old key not found in database.');
+                await bot.sendMessage(chatId, '❌ Old key not found in the database.');
                 return;
             }
 
             const [result] = await db.execute(
                 `UPDATE UserKeys
                  SET FullKey = ?, GuiKey = ?
-                 WHERE FullKey = ? OR GuiKey = ?`,
-                [newKey, newGuiKey, oldKey, oldKey]
+                 WHERE FullKey = ? OR GuiKey = ? OR GuiKey = ?`,
+                [newKey, newGuiKey, oldKey, oldKey, altOldKey]
             );
 
             if (result.affectedRows === 0) {
-                await bot.sendMessage(
-                    chatId,
-                    '❌ Update failed. No rows affected.'
-                );
+                await bot.sendMessage(chatId, '❌ Update failed. No rows affected.');
                 return;
             }
 
@@ -1121,71 +1354,6 @@ module.exports = function registerCommands(bot, deps) {
         }
     });
 
-    // ---------------------------------------------------------------------
-    // /hc or /HiddenCommands   (admin only)
-    // ---------------------------------------------------------------------
-    bot.onText(/\/(hc|HiddenCommands)/, async (msg) => {
-        const chatId = msg.chat.id;
-        const senderId = msg.from.id;
-
-        try {
-            const [adminRows] = await db.execute(
-                'SELECT Role FROM Admins WHERE UserID = ? AND IsActive = 1 LIMIT 1',
-                [senderId]
-            );
-
-            if (adminRows.length === 0) {
-                await bot.sendMessage(chatId, '❌ Error: You are not an active admin.');
-                return;
-            }
-
-            const role = adminRows[0].Role;
-            if (role !== 'admin' && role !== 'superadmin') {
-                await bot.sendMessage(chatId, '❌ Error: You do not have permission.');
-                return;
-            }
-        /*
-            const commandKeyboard = {
-                reply_markup: {
-                    keyboard: [
-                        ["/expiredkeys"],
-                        ["/expiredkeysnotify"],
-                        ["/useridADDbalance"],
-                        ["/usernameADDbalance"],
-                        ["/userbalanceuserID"],
-                        ["/userbalance"],
-                        ["/sendMessage"],
-                        ["/keyusername"],
-                        ["/keyuserid"],
-                        ["/removekey"],
-                        ["/removekeyexpired"],
-                        ["/sc"]
-                    ],
-                    resize_keyboard: true,
-                    one_time_keyboard: true
-                }
-            };
-*/
-            const commandKeyboard = {
-                reply_markup: {
-                    keyboard: [
-                        ["/expiredkeys", "/expiredkeysnotify"],
-                        ["/useridADDbalance", "/usernameADDbalance"],
-                        ["/userbalanceuserID", "/userbalance"],
-                        ["/sendMessage", "/keyusername"],
-                        ["/keyuserid", "/removekey"],
-                        ["/removekeyexpired", "/sc"]
-                    ],
-                    resize_keyboard: true,
-                    one_time_keyboard: true
-                }
-            };
-
-            await bot.sendMessage(chatId, "🔒 Hidden Commands:\nTap a command to auto-populate:", commandKeyboard);
-
-        } catch (err) {
-            console.error("Error checking admin:", err);
-            await bot.sendMessage(chatId, "⚠️ Internal error, please try again later.");
-        }
-    });
+    // /hc and /HiddenCommands are now aliases of /admin (see admin_help_handler.js).
 };
+

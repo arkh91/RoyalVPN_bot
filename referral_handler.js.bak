@@ -1,0 +1,163 @@
+// referral_handler.js
+//
+// Usage:
+//   const registerReferralMenuCommand = require('./referral_handler');
+//   registerReferralMenuCommand(bot, { db });
+//
+// Registers "/referral" for every user (not admin-only): shows their own
+// invite code, who invited them (if anyone), how many people they've
+// invited, and how much they've earned. A button lets them set or change
+// who invited them at any time.
+//
+// This file is entirely self-contained: it registers its OWN
+// bot.onText, bot.on('callback_query') and bot.on('message') listeners,
+// the same way commands.js and main.js each already register their own
+// independent listeners for the same event types. It does not touch
+// main.js's big callback_query handler.
+//
+// ONE small change is still needed elsewhere: commands.js's generic
+// bot.on('message') handler forwards any plain (non-command) message to
+// the admin. Without an exception, a user typing their invite code would
+// get forwarded as a stray message. See the `waitingForReferralCode`
+// check added in commands.js, right next to its existing /KeyStatus
+// check — same pattern, same reason.
+//
+// Design notes:
+//   - waitingForReferralCode is a Set of chatIds, exported so commands.js
+//     can check it (read-only) without creating a second source of truth.
+//   - Setting who invited you has NO lock: /referral's "Change invite
+//     code" button works identically whether or not one is already set,
+//     by design (see db/referral.js). A user typing the wrong thing gets
+//     put right back into the waiting set so they can just try again.
+const { getReferralInfo, setReferredBy, clearReferredBy } = require('./db/referral');
+const { formatMoney } = require('./currency');
+
+// Chat IDs currently expected to type an invite code as their next
+// message. Read by commands.js; written only here.
+const waitingForReferralCode = new Set();
+
+const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/**
+ * Usage:
+ *   const { text, reply_markup } = await buildReferralMenu(db, userId);
+ *   bot.sendMessage(chatId, text, { parse_mode: 'HTML', reply_markup });
+ */
+async function buildReferralMenu(db, userId) {
+    const info = await getReferralInfo(db, userId);
+
+    const invitedByLine = info.referredByUserId
+        ? `👤 Invited by: ${info.referredByUsername ? '@' + escapeHtml(info.referredByUsername) : 'UserID ' + info.referredByUserId}`
+        : '👤 Invited by: <i>not set</i>';
+
+    const earnedLine = `💰 Total earned: ${formatMoney('USD', info.totals.USD)} | ${formatMoney('IRC', info.totals.IRC)}`;
+
+    const text =
+        `🎁 <b>Referral Program</b>\n\n` +
+        `Share your code — when a friend you invited makes a purchase, you earn a reward.\n\n` +
+        `🔗 Your invite code: <code>${info.code}</code>\n` +
+        `👥 People you invited: ${info.inviteCount}\n` +
+        `${earnedLine}\n\n` +
+        `${invitedByLine}`;
+
+    const buttons = [[{ text: '✏️ Set / change invite code', callback_data: 'referral_setcode' }]];
+    if (info.referredByUserId) {
+        buttons.push([{ text: '🗑️ Clear invite code', callback_data: 'referral_clearcode' }]);
+    }
+
+    return { text, reply_markup: { inline_keyboard: buttons } };
+}
+
+module.exports = function registerReferralMenuCommand(bot, deps) {
+    const { db } = deps;
+
+    bot.onText(/^\/referral$/i, async (msg) => {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        try {
+            const menu = await buildReferralMenu(db, userId);
+            await bot.sendMessage(chatId, menu.text, { parse_mode: 'HTML', reply_markup: menu.reply_markup });
+        } catch (err) {
+            console.error('/referral error:', err);
+            await bot.sendMessage(chatId, '❌ Something went wrong loading your referral info. Please try again.');
+        }
+    });
+
+    bot.on('callback_query', async (query) => {
+        const data = query.data;
+        if (!data || !data.startsWith('referral_')) return; // not ours — every other listener ignores it the same way
+
+        const chatId = query.message.chat.id;
+        const userId = query.from.id;
+
+        try {
+            if (data === 'referral_setcode') {
+                waitingForReferralCode.add(chatId);
+                await bot.answerCallbackQuery(query.id);
+                await bot.sendMessage(
+                    chatId,
+                    '✏️ Send the invite code you want to use.\nSend "clear" to remove your current one, or "cancel" to stop.'
+                );
+                return;
+            }
+
+            if (data === 'referral_clearcode') {
+                await clearReferredBy(db, userId);
+                await bot.answerCallbackQuery(query.id, { text: 'Invite code cleared.' });
+                const menu = await buildReferralMenu(db, userId);
+                await bot.sendMessage(chatId, menu.text, { parse_mode: 'HTML', reply_markup: menu.reply_markup });
+                return;
+            }
+
+            await bot.answerCallbackQuery(query.id);
+        } catch (err) {
+            console.error('referral callback_query error:', err);
+            try { await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.' }); } catch (_) {}
+        }
+    });
+
+    bot.on('message', async (msg) => {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        const text = msg.text?.trim();
+
+        // Not our business unless this chat is mid-flow, waiting on a
+        // plain-text (non-command) reply.
+        if (!text || text.startsWith('/') || !waitingForReferralCode.has(chatId)) return;
+
+        // Deleting here (synchronously, before any await) is what lets
+        // commands.js's own message listener — registered BEFORE this one,
+        // see the comment at registerReferralMenuCommand's call site in main.js —
+        // still see this chat as "waiting" when it runs its own check a
+        // moment earlier in the same synchronous dispatch pass.
+        waitingForReferralCode.delete(chatId);
+
+        try {
+            if (/^cancel$/i.test(text)) {
+                await bot.sendMessage(chatId, 'Cancelled.');
+                return;
+            }
+
+            if (/^clear$/i.test(text)) {
+                await clearReferredBy(db, userId);
+                await bot.sendMessage(chatId, '✅ Your invite code has been cleared.');
+                return;
+            }
+
+            const result = await setReferredBy(db, userId, text);
+            if (!result.ok) {
+                // Let them try again rather than making them re-open the menu.
+                waitingForReferralCode.add(chatId);
+                await bot.sendMessage(chatId, `⚠️ ${result.error}\n\nTry again, or send "cancel".`);
+                return;
+            }
+
+            await bot.sendMessage(chatId, `✅ You're now marked as invited by ${result.inviterLabel}.`);
+        } catch (err) {
+            console.error('referral code-entry error:', err);
+            await bot.sendMessage(chatId, '❌ Something went wrong. Please try /referral again.');
+        }
+    });
+};
+
+module.exports.waitingForReferralCode = waitingForReferralCode;

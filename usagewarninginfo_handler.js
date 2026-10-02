@@ -34,6 +34,8 @@
 //     evaluate.
 const { getKeysUsage, formatBytes } = require('./getKeysUsage');
 
+const registry = require('./commandRegistry');
+registry.register('/usagewarninginfo [min] [max]', 'same scan, admin view only, no notifications', ['superadmin', 'admin']);
 // Usage:
 //   await sendInChunks(bot, chatId, longText)
 //

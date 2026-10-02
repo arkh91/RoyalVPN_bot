@@ -20,7 +20,11 @@
 //   /keystatus <outline key>   -> Owner UserID + FullKey + Active/Not
 //                                 Active + Usage (looked up across ALL
 //                                 users' keys)
-//   /keystatus <wireguard key> -> "under development" message
+//   /keystatus <wireguard key or name> -> 🔌 [WG] Owner UserID + Name +
+//                                 Server + Active/Not Active + Usage,
+//                                 plus the full reconstructed .conf in a
+//                                 tap-to-copy block (looked up across ALL
+//                                 users' wg_clients rows)
 //   anything else               -> "no matching key found"
 //
 // How Outline vs WireGuard is decided:
@@ -28,25 +32,49 @@
 //      (by FullKey, or by GuiKey with/without a leading '#'), across all
 //      users. A match means it's an Outline key we manage — handle it
 //      fully.
-//   2) If there's no DB match, we check whether the string LOOKS like a
-//      WireGuard key: a 43-44 char base64 blob ending in '=', with none
-//      of the markers an Outline key/tag would have (no "ss://", no "#").
-//      WireGuard peers aren't tracked in UserKeys yet, so we can't look
-//      them up — we just acknowledge the format and say it's pending.
+//   2) If there's no Outline match, we check whether the argument matches
+//      ANY row in wg_clients, across all users — by exact public_key,
+//      exact private_key (so pasting either straight out of a .conf file
+//      works), or by the friendly name tag (e.g. "Ger28_09262026_143012",
+//      matched with a leading '#' and the trailing flag emoji ignored —
+//      see normalizeWgNameToken below). A match means it's a WireGuard
+//      client we manage — handle it fully, straight from the DB: unlike
+//      Outline, WireGuard usage/status is already tracked in wg_clients
+//      (is_active/is_expired/is_suspended/total_bytes/max_data_limit),
+//      so no live API round-trip is needed here.
 //   3) Otherwise, we don't recognize it at all.
 const { getKeysUsage, formatBytes } = require('./getKeysUsage');
 
+const registry = require('./commandRegistry');
+registry.register('/keystatus <key>', "look up any key's owner, status, usage", ['superadmin', 'admin', 'moderator']);
+
 // Usage:
-//   looksLikeWireGuardKey('abc123...==') -> true/false
+//   normalizeWgNameToken('#Ger28_09262026_143012🇩🇪') -> 'ger28_09262026_143012'
+//   normalizeWgNameToken('Ger28_09262026_143012')      -> 'ger28_09262026_143012'
 //
-// WireGuard public/private keys are 32 raw bytes, base64-encoded -> always
-// 44 characters with a trailing '='. Outline identifiers either start with
-// "ss://" (FullKey) or "#" (GuiKey), so excluding those avoids false
-// positives if an Outline key happens to be base64-shaped.
-function looksLikeWireGuardKey(input) {
-    return /^[A-Za-z0-9+/]{43}=$/.test(input)
-        && !input.startsWith('ss://')
-        && !input.includes('#');
+// wg_clients.name is built as "<alias>_<MMDDYYYY>_<HHMMSS>[_devN]<flag>"
+// with NO space before the flag emoji (see createWireGuardKeys() in
+// db/WGKeyCreation.js) — unlike Outline's GuiKey, which has one. A user
+// won't have the flag emoji handy to paste back, and may or may not
+// include the leading '#' Telegram displayed it with, so this strips
+// both: drop a leading '#', keep only the leading run of
+// [A-Za-z0-9_] characters (which is always exactly the flag-free name),
+// and lowercase it for a case-insensitive match.
+function normalizeWgNameToken(value) {
+    const noHash = String(value).trim().replace(/^#/, '');
+    const match = noHash.match(/^[A-Za-z0-9_]+/);
+    return (match ? match[0] : noHash).toLowerCase();
+}
+
+// Usage:
+//   isWgClientActive(wgRow) -> true/false
+//
+// Mirrors the same definition used for /keyusername and /keyuserid in
+// commands.js — duplicated here rather than imported, matching this
+// file's existing preference (see escapeHtml above) for having no
+// hidden cross-file dependency on another handler's internals.
+function isWgClientActive(client) {
+    return !!client.is_active && !client.is_expired && !client.is_suspended && !client.is_deleted;
 }
 
 // Usage:
@@ -59,6 +87,47 @@ function escapeHtml(text) {
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
+}
+
+// Usage:
+//   const configText = buildWgConfigText(wgRow);
+//   `<pre>${escapeHtml(configText)}</pre>`   // tap-to-copy in Telegram
+//
+// wg_clients has no single "full config" column — private_key, address,
+// dns, public_key, endpoint and allowed_ips are separate columns (see
+// db/WGKeyCreation.js's saveClientToDB). This rebuilds the exact .conf
+// text from those columns, the same shape the customer received when
+// the key was issued, so an admin can tap-to-copy it straight out of
+// Telegram to test the key. Same helper as /keyusername and /keyuserid
+// in commands.js — duplicated here rather than imported, matching this
+// file's existing convention (see escapeHtml/isWgClientActive above).
+//
+// PersistentKeepalive isn't stored anywhere (the WireGuard server's
+// /create response never included it), so it's appended as a fixed
+// line — 25 seconds is the standard keepalive for clients behind NAT.
+function buildWgConfigText(client) {
+    return (
+        `[Interface]\n` +
+        `PrivateKey = ${client.private_key}\n` +
+        `Address = ${client.address}\n` +
+        `DNS = ${client.dns}\n\n` +
+        `[Peer]\n` +
+        `PublicKey = ${client.public_key}\n` +
+        `Endpoint = ${client.endpoint}\n` +
+        `AllowedIPs = ${client.allowed_ips}\n` +
+        `PersistentKeepalive = 25`
+    );
+}
+
+// Usage:
+//   catch (err) { await bot.sendMessage(chatId, `Error: ${telegramErrorDetail(err)}`); }
+//
+// node-telegram-bot-api always sets err.code to the generic 'ETELEGRAM'
+// for ANY rejected API call — a bad HTML tag, a too-long message, a
+// blocked user, all look identical from err.code alone. The actual
+// reason Telegram gave lives at err.response.body.description.
+function telegramErrorDetail(err) {
+    return err?.response?.body?.description || err?.message || err?.code || 'Unknown error';
 }
 
 // Usage:
@@ -163,9 +232,55 @@ module.exports = function registerKeyStatusCommand(bot, deps) {
                 return;
             }
 
-            // --- 2) Not an Outline key we manage — does it look like WireGuard? ---
-            if (looksLikeWireGuardKey(input)) {
-                await bot.sendMessage(chatId, "🚧 WireGuard key status is under development.");
+            // --- 2) Not an Outline key — try to resolve as a WireGuard
+            // client belonging to ANY user (public_key, private_key, or
+            // the friendly name tag). ---
+            const [wgAllRows] = await db.execute(
+                `SELECT UserID, name, public_key, private_key, server_name,
+                        address, dns, allowed_ips, endpoint,
+                        is_active, is_expired, is_suspended, is_deleted,
+                        total_bytes, rx_bytes, tx_bytes, max_data_limit
+                 FROM wg_clients`
+            );
+
+            const normalizedNameInput = normalizeWgNameToken(input);
+            const wgRows = wgAllRows.filter(row => {
+                if (input === row.public_key) return true;
+                if (input === row.private_key) return true;
+                if (normalizedNameInput && normalizeWgNameToken(row.name) === normalizedNameInput) return true;
+                return false;
+            });
+
+            if (wgRows.length > 0) {
+                const client = wgRows[0];
+                const statusText = isWgClientActive(client) ? "<b>Active</b>" : "<b>Not Active</b>";
+
+                // Usage comes straight from the row's own stored columns —
+                // no live API call, unlike the Outline branch above.
+                // WireGuard usage is already tracked in the DB.
+                const usedBytes = client.total_bytes != null
+                    ? Number(client.total_bytes)
+                    : Number(client.rx_bytes || 0) + Number(client.tx_bytes || 0);
+                const used = formatBytes(usedBytes);
+
+                let usageText;
+                if (client.is_deleted) usageText = `<b>Deleted</b> (${used})`;
+                else if (client.is_expired) usageText = `<b>Expired</b> (${used})`;
+                else if (client.is_suspended) usageText = `<b>Suspended</b> (${used})`;
+                else if (!client.is_active) usageText = `<b>Inactive</b> (${used})`;
+                else usageText = client.max_data_limit
+                    ? `${used} / ${formatBytes(Number(client.max_data_limit))}`
+                    : `${used} (no limit)`;
+
+                const message =
+                    `👤 Owner UserID: <code>${escapeHtml(String(client.UserID))}</code>\n` +
+                    `🔌 <b>[WG]</b> Key: <code>${escapeHtml(client.name)}</code>\n` +
+                    `Server: ${escapeHtml(client.server_name)}\n` +
+                    `Status: ${statusText}\n` +
+                    `Usage: ${usageText}\n` +
+                    `<pre>${escapeHtml(buildWgConfigText(client))}</pre>`;
+
+                await bot.sendMessage(chatId, message, { parse_mode: "HTML" });
                 return;
             }
 
@@ -174,7 +289,7 @@ module.exports = function registerKeyStatusCommand(bot, deps) {
 
         } catch (err) {
             console.error("/keystatus error:", err);
-            await bot.sendMessage(chatId, "⚠️ Error checking key status. Please try again later.");
+            await bot.sendMessage(chatId, `⚠️ Error checking key status: ${telegramErrorDetail(err)}`);
         }
     });
 };

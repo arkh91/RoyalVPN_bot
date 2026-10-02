@@ -13,17 +13,22 @@ const checkEligible = require ('./checkEligibility');
 const Game_Arena_checkEligible = require ('./Game_Arena_checkEligibility');
 const getUserBalance = require('./db/getUserBalance'); // adjust path as needed
 const deductBalance = require('./db/deductBalance');   // same here
+const choosePaymentCurrency = require('./db/choosePaymentCurrency'); // Iran menu -> IRC (Rial), International menu -> USD
+const { formatMoney } = require('./currency');
+const registerReferralMenuCommand = require('./referral_handler');
+const registerReferralsReportCommand = require('./referrals_command_handler');
+const { creditReferralReward } = require('./db/referral');
+const pricing = require('./pricing');                  // all prices + USD/IRC rate live here now
 //const { checkBalance, updatePendingPayments } = require('./payments');
 //const { updatePendingPayments } = require('./payments');
 const db = require('./db');
 const mysql = require('mysql');
 console.log("✅ MySQL module loaded successfully");
-const getNowPaymentsStatus = require('./getNowPaymentsStatus');
-const updatePendingPayments = require('./updatePendingPayments');
+// Crypto top-ups (menus, NowPayments API, automatic payment checking) live in ./payment
+const { handlePaymentCallback, startPaymentPoller } = require('./payment');
 //const getNowPaymentsInvoiceStatus = require('./getNowPaymentsStatus');
 const fs = require('fs');
 //const getNowPaymentsInvoiceStatus = require("../getNowPaymentsInvoiceStatus");
-const getNowPaymentsInvoiceStatus = require('./getNowPaymentsInvoiceStatus');
 const KeyExists = require('./db/keyExists');
 const SERVERS = require('./servers'); //removekey command
 const https = require('https'); //removekey command
@@ -53,9 +58,7 @@ let callbackToInternationalServer = {};
 
 
 const { TELEGRAM_BOT_TOKEN } = require('./token');
-const { NOWPAYMENTS_API_KEY } = require('./token');
 
-const createNowPaymentsSession = require('./createNowPaymentsSession');
 
 // Function to load JSON config
 function loadConfig() {
@@ -99,30 +102,40 @@ const WG_COUNTRY_TO_ALIAS = {
      usa: 'US08',
 };
 
-const WG_BASE_BANDWIDTH_PRICES = {
-    40: 1.10,
-    50: 1.29,
-    70: 1.95,
-    100: 2.33,
-    300: 5.60,
-    1000: 16.99
-};
+// Price tables moved to ./pricing.js (USD + IRC). Iran menus show IRC (Rial) prices.
 
-// Total price = base (1 device) + $1.00 for each additional device.
-function getWgPrice(bandwidthGb, deviceCount) {
-    const base = WG_BASE_BANDWIDTH_PRICES[bandwidthGb];
-    return base + (deviceCount - 1) * 1.00;
-}
-
+/**
+ * Usage: const menu = buildWgTrafficMenu(2);   // 2 devices
+ *        bot.editMessageText(menu.text, { chat_id, message_id, reply_markup: menu.reply_markup });
+ * WireGuard is only reachable from the Iran menu, so labels are in IRC (Rial).
+ */
 function buildWgTrafficMenu(deviceCount) {
-    const buttons = Object.keys(WG_BASE_BANDWIDTH_PRICES).map(gb => {
-        const total = getWgPrice(Number(gb), deviceCount);
-        return [{ text: `${gb} GB / ${total.toFixed(2)} USD`, callback_data: `wg_bw_${gb}` }];
+    const buttons = pricing.WG_GB_OPTIONS.map(gb => {
+        const total = pricing.getWgPrice(gb, deviceCount, 'IRC');
+        return [{ text: `${gb} GB / ${formatMoney('IRC', total)}`, callback_data: `wg_bw_${gb}` }];
     });
     buttons.push([{ text: '⬅️ Go Back', callback_data: 'sub_wg_number_user' }]);
 
     return {
         text: `Select your 30-day WireGuard traffic package (${deviceCount} device${deviceCount > 1 ? 's' : ''}):`,
+        reply_markup: { inline_keyboard: buttons }
+    };
+}
+
+/**
+ * Usage: const menu = buildIranOutlineMenu();
+ *        bot.editMessageText(menu.text, { chat_id, message_id, reply_markup: menu.reply_markup });
+ * Iran Outline bandwidth menu with IRC (Rial) prices. Same callback_data
+ * ('bw_<GB>') as before, so the purchase handler is found the same way.
+ */
+function buildIranOutlineMenu() {
+    const buttons = pricing.IRAN_OUTLINE_GBS.map(gb => (
+        [{ text: `${gb} GB / ${formatMoney('IRC', pricing.getOutlinePrice(gb, 'IRC'))}`, callback_data: `bw_${gb}` }]
+    ));
+    buttons.push([{ text: '⬅️ Go Back', callback_data: 'sub_1_speed' }]);
+
+    return {
+        text: 'Select the 30-day Outline bandwidth limit:',
         reply_markup: { inline_keyboard: buttons }
     };
 }
@@ -174,9 +187,10 @@ const subMenus = {
             inline_keyboard: [
                 [
                     { text: 'Germany 🇩🇪', callback_data: 'wg_speed_ger' },
-                    { text: 'Sweden 🇸🇪', callback_data: 'wg_speed_sweden' }
+                    //{ text: 'Sweden 🇸🇪', callback_data: 'wg_speed_sweden' }
+                    { text: 'UK 🇬🇧 ', callback_data: 'wg_speed_uk' }
                 ],
-                [
+/*                [
                     { text: 'Thailand 🇹🇭 ', callback_data: 'wg_speed_tha' },
                     //{ text: 'Iran 🇮🇷', callback_data: 'speed_ir' }
                     { text: 'Italy 🇮🇹 ', callback_data: 'wg_speed_it' }
@@ -193,7 +207,7 @@ const subMenus = {
                     { text: 'UK 🇬🇧 ', callback_data: 'wg_speed_uk' },
                     { text: 'USA 🇺🇸', callback_data: 'wg_speed_usa' }
                 ],
-                [{ text: '⬅️ Go Back', callback_data: 'sub_Outline_VS_WireGuard' }]
+  */              [{ text: '⬅️ Go Back', callback_data: 'sub_Outline_VS_WireGuard' }]
             ]
         }
     },
@@ -202,8 +216,8 @@ const subMenus = {
         reply_markup: {
            inline_keyboard: [
                 [{ text: '1 device', callback_data: 'wg_number_one_devices' }],
-                [{ text: '2 devices + $1', callback_data: 'wg_number_two_devices' }],
-                [{ text: '3 devices + $2', callback_data: 'wg_number_three_devices' }],
+                [{ text: `2 devices + ${formatMoney('IRC', pricing.getWgExtraDeviceFee('IRC'))}`, callback_data: 'wg_number_two_devices' }],
+                [{ text: `3 devices + ${formatMoney('IRC', 2 * pricing.getWgExtraDeviceFee('IRC'))}`, callback_data: 'wg_number_three_devices' }],
                 [{ text: '⬅️ Go Back', callback_data: 'sub_wgvpn' }]
            ]
         }
@@ -240,8 +254,8 @@ const subMenus = {
         text: '🎮 Arena Breakout – Select your package:',
         reply_markup: {
                 inline_keyboard: [
-                        [{ text: '25 GB – $0.99', callback_data: 'arena_25gb' }],
-                        [{ text: '50 GB – $1.89', callback_data: 'arena_50gb' }],
+                        [{ text: `25 GB – ${formatMoney('IRC', pricing.getArenaPrice(25, 'IRC'))}`, callback_data: 'arena_25gb' }],
+                        [{ text: `50 GB – ${formatMoney('IRC', pricing.getArenaPrice(50, 'IRC'))}`, callback_data: 'arena_50gb' }],
                         [{ text: '⬅️ Go Back', callback_data: 'sub_1_game' }]
                 ]
         }
@@ -364,7 +378,6 @@ registerCommands(bot, {
     insertUser,
     insertVisit,
     getKeyStatusResponseMessage,
-    getNowPaymentsInvoiceStatus,
     KeyExists,
     SERVERS,
     axios,
@@ -372,6 +385,8 @@ registerCommands(bot, {
     mainMenu,
     waitingForKey
 });
+// Checks open crypto payments in the background and notifies users automatically
+startPaymentPoller(bot, db);
 registerAdminCommand(bot, { db });
 registerBroadcastCommand(bot, { db });
 registerServerCheckCommand(bot, { db, SERVERS, axios, https });
@@ -394,12 +409,26 @@ registerWGTestServerCommand(bot, { db, createWireGuardKeys });
 registerWGTestServerIranCommand(bot, { db, createWireGuardKeys });
 registerAvailableServersWGCommand(bot, { db });
 
+// registerReferralMenuCommand MUST be called AFTER registerCommands (above,
+// where commands.js sets up its own bot.on('message') listener).
+// commands.js checks waitingForReferralCode to avoid forwarding a typed
+// invite code to the admin; that check only works if it runs BEFORE
+// referral_handler.js's own message listener deletes the chat from that
+// set. Node's EventEmitter calls 'message' listeners synchronously in
+// registration order, so registering commands.js first is what makes
+// this safe — moving this line earlier would reintroduce the leak.
+registerReferralMenuCommand(bot, { db });
+registerReferralsReportCommand(bot, { db });
+
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
     const data = query.data;
     const userId = query.from.id;
     //console.log(`[TRACE] User=${userId} | Data=${data}`);
+
+    // /payment flow (Direct / Crypto menus, payment creation) -> ./payment/menus.js
+    if (await handlePaymentCallback(bot, query, { db })) return;
 
 // !
     if (data === "speed_eg" || data === "speed_tur") {
@@ -433,7 +462,7 @@ bot.on('callback_query', async (query) => {
                 isInternational: false   // ✅ Optional, but helpful for clarity
         };
 
-        const bandwidthMenu = subMenus.bandwidth_menu;
+        const bandwidthMenu = buildIranOutlineMenu();   // IRC (Rial) prices
         return bot.editMessageText(bandwidthMenu.text, {
                 chat_id: chatId,
                 message_id: messageId,
@@ -505,21 +534,19 @@ bot.on('callback_query', async (query) => {
 
         if (data.startsWith('bw_') || data.startsWith('int_bw_')) {
                 const isInternational = data.startsWith('int_bw_');
-                console.log(`⚡ BW Selection: data=${data}, isInternational=${isInternational}`);
+                // Iran menu pays from the IRC (Rial) wallet, International menu from USD.
+                const preferredCurrency = isInternational ? 'USD' : 'IRC';
+                console.log(`⚡ BW Selection: data=${data}, isInternational=${isInternational}, currency=${preferredCurrency}`);
                 const bandwidthGb = parseInt(data.replace(isInternational ? 'int_bw_' : 'bw_', ''), 10);
 
-        const bandwidthPrices = {
-                20: 1.99,
-                40: 2.19,
-                50: 2.29,
-                70: 2.79,
-                100: 3.29,
-                300: 6.49,
-                500: 10.30,
-                1000: 17.99
+        const prices = {
+                USD: pricing.getOutlinePrice(bandwidthGb, 'USD'),
+                IRC: pricing.getOutlinePrice(bandwidthGb, 'IRC')
         };
-
-        const requiredAmount = bandwidthPrices[bandwidthGb];
+        if (!prices[preferredCurrency]) {
+                await bot.sendMessage(chatId, '❌ Invalid bandwidth selection.');
+                return;
+        }
         const session = bot.session?.[userId];
 
         // Check server selection
@@ -539,15 +566,15 @@ bot.on('callback_query', async (query) => {
 
         try {
                 const eligible = await checkEligible(userId, chatId, bot);
-                const balanceValue = await getUserBalance(userId);
+                const payment = await choosePaymentCurrency(userId, prices, preferredCurrency);
 
-                console.log(`User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Required: $${requiredAmount}`);
+                console.log(`User ${userId} | Eligible: ${eligible} | Pay with: ${payment.currency} | Balances: ${JSON.stringify(payment.balances)} | Prices: ${JSON.stringify(prices)}`);
 
                 // Not enough balance
-                if (!eligible && balanceValue < requiredAmount) {
+                if (!eligible && !payment.currency) {
                         await bot.sendMessage(
                         chatId,
-                        `❌ You need at least $${requiredAmount.toFixed(2)} to buy ${bandwidthGb} GB.\nYour current balance: $${balanceValue.toFixed(2)}.\n\nUse /payment to top up.`
+                        pricing.insufficientFundsText({ preferred: preferredCurrency, prices, balances: payment.balances, what: `${bandwidthGb} GB` })
                 );
                 return;
                 }
@@ -572,10 +599,11 @@ bot.on('callback_query', async (query) => {
                 );
                 }
 
-                // Deduct for non-VIP
+                // Deduct for non-VIP (from the wallet choosePaymentCurrency picked)
                 if (!eligible) {
-                        await deductBalance(userId, requiredAmount);
-                        await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
+                        await deductBalance(userId, payment.amount, payment.currency);
+                        await bot.sendMessage(chatId, `💰 ${formatMoney(payment.currency, payment.amount)} has been deducted from your balance.`);
+                        await creditReferralReward(db, bot, userId, payment.currency, payment.amount, 'Outline');
                 }
 
         } catch (err) {
@@ -589,30 +617,27 @@ bot.on('callback_query', async (query) => {
         return;
     }
 
-
     if (data === 'arena_25gb' || data === 'arena_50gb') {
         const bandwidthGb = data === 'arena_25gb' ? 25 : 50;
         const selectedServer = 'IT01';
 
-        // Define Arena pricing
-        const arenaPrices = {
-                25: 0.99,  // Adjust these prices as needed
-                50: 1.89
+        // Arena is only reachable from the Iran menu -> pays from IRC (Rial), USD fallback.
+        const prices = {
+                IRC: pricing.getArenaPrice(bandwidthGb, 'IRC'),
+                USD: pricing.getArenaPrice(bandwidthGb, 'USD')
         };
-
-        const requiredAmount = arenaPrices[bandwidthGb];
 
         try {
                 const eligible = await Game_Arena_checkEligible(userId, chatId, bot);
-                const balanceValue = await getUserBalance(userId); // Should return number like 3.75
+                const payment = await choosePaymentCurrency(userId, prices, 'IRC');
 
-                console.log(`Arena | User ${userId} | Eligible: ${eligible} | Balance: $${balanceValue} | Needs: $${requiredAmount}`);
+                console.log(`Arena | User ${userId} | Eligible: ${eligible} | Pay with: ${payment.currency} | Balances: ${JSON.stringify(payment.balances)} | Prices: ${JSON.stringify(prices)}`);
 
                 // Block if not eligible and not enough balance
-                if (!eligible && balanceValue < requiredAmount) {
+                if (!eligible && !payment.currency) {
                         await bot.sendMessage(
                         chatId,
-                `❌ You need at least $${requiredAmount.toFixed(2)} to get ${bandwidthGb}GB Arena access.\nYour current balance: $${balanceValue.toFixed(2)}.\nUse /payment to top up.`
+                        pricing.insufficientFundsText({ preferred: 'IRC', prices, balances: payment.balances, what: `${bandwidthGb}GB Arena access` })
                 );
                         return;
                 }
@@ -627,8 +652,9 @@ bot.on('callback_query', async (query) => {
 
                 // Deduct balance only for non-VIP
                 if (!eligible) {
-                        await deductBalance(userId, requiredAmount);
-                        await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
+                        await deductBalance(userId, payment.amount, payment.currency);
+                        await bot.sendMessage(chatId, `💰 ${formatMoney(payment.currency, payment.amount)} has been deducted from your balance.`);
+                        await creditReferralReward(db, bot, userId, payment.currency, payment.amount, 'Arena');
                 }
 
         } catch (err) {
@@ -638,7 +664,6 @@ bot.on('callback_query', async (query) => {
 
                 return;
         }
-
 
     if (data.startsWith('wg_speed_')) {
 
@@ -700,13 +725,12 @@ if (data.startsWith('wg_bw_')) {
     }
     session.inProgress = true;
 
-    //const requiredAmount = WG_BASE_BANDWIDTH_PRICES[bandwidth];
-        const EXTRA_DEVICE_FEE = 1.00;
-//const requiredAmount = WG_BASE_BANDWIDTH_PRICES[bandwidth] + (session.devices - 1) * EXTRA_DEVICE_FEE;
-
-const requiredAmount = Math.round(
-    (WG_BASE_BANDWIDTH_PRICES[bandwidth] + (session.devices - 1) * EXTRA_DEVICE_FEE) * 100
-) / 100;
+    // WireGuard is only reachable from the Iran menu -> pays from IRC (Rial), USD fallback.
+    const prices = {
+        IRC: pricing.getWgPrice(bandwidth, session.devices, 'IRC'),
+        USD: pricing.getWgPrice(bandwidth, session.devices, 'USD')
+    };
+    const requiredAmount = prices.IRC;
     if (!requiredAmount) {
         await bot.sendMessage(chatId, '❌ Invalid bandwidth selection.');
         delete bot.session[userId];
@@ -722,14 +746,14 @@ const requiredAmount = Math.round(
 
     try {
         const eligible = await checkEligible(userId, chatId, bot);
-        const balanceValue = await getUserBalance(userId);
+        const payment = await choosePaymentCurrency(userId, prices, 'IRC');
 
-        console.log(`WG | User ${userId} | Country: ${session.country} | Devices: ${session.devices} | BW: ${bandwidth}GB | Balance: $${balanceValue} | Required: $${requiredAmount}`);
+        console.log(`WG | User ${userId} | Country: ${session.country} | Devices: ${session.devices} | BW: ${bandwidth}GB | Pay with: ${payment.currency} | Balances: ${JSON.stringify(payment.balances)} | Prices: ${JSON.stringify(prices)}`);
 
-        if (!eligible && balanceValue < requiredAmount) {
+        if (!eligible && !payment.currency) {
             await bot.sendMessage(
                 chatId,
-                `❌ You need at least $${requiredAmount.toFixed(2)} to buy ${bandwidth} GB.\nYour current balance: $${balanceValue.toFixed(2)}.\n\nUse /payment to top up.`
+                pricing.insufficientFundsText({ preferred: 'IRC', prices, balances: payment.balances, what: `${bandwidth} GB` })
             );
             return;
         }
@@ -788,8 +812,9 @@ const requiredAmount = Math.round(
         }
 
         if (!eligible) {
-            await deductBalance(userId, requiredAmount);
-            await bot.sendMessage(chatId, `💰 $${requiredAmount.toFixed(2)} has been deducted from your balance.`);
+            await deductBalance(userId, payment.amount, payment.currency);
+            await bot.sendMessage(chatId, `💰 ${formatMoney(payment.currency, payment.amount)} has been deducted from your balance.`);
+            await creditReferralReward(db, bot, userId, payment.currency, payment.amount, 'WireGuard');
         }
 
     } catch (err) {
@@ -802,239 +827,9 @@ const requiredAmount = Math.round(
     return;
 }
 
-    // NOWPAYMENT → DOGECOIN SUBMENUS
-    if (data === 'pay_nowpayment') {
-        return bot.editMessageText('🪙 Choose a cryptocurrency:', {
-            chat_id: chatId,
-            message_id: messageId,
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: 'Dogecoin (DOGE)', callback_data: 'pay_doge' }],
-                    [{ text: 'Toncoin (Ton)', callback_data: 'pay_ton' }],
-                    [{ text: '⬅️ Go Back', callback_data: 'back_to_payment' }]
-                ]
-            }
-        });
-    }
-
-    if (data === 'pay_doge') {
-        return bot.editMessageText('🔗 Choose the Dogecoin network:', {
-            chat_id: chatId,
-            message_id: messageId,
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: 'Dogecoin (DOGE)', callback_data: 'doge_network_native' }],
-                    [{ text: '⬅️ Go Back', callback_data: 'pay_nowpayment' }]
-                ]
-            }
-        });
-    }
-
-    if (data === 'doge_network_native') {
-        return bot.editMessageText('💰 Choose the amount to pay in USD:', {
-            chat_id: chatId,
-            message_id: messageId,
-            reply_markup: {
-                inline_keyboard: [
-                    [
-                        //{ text: '$1', callback_data: 'doge_pay_1' },
-                        { text: '$3', callback_data: 'doge_pay_3' },
-                        { text: '$5', callback_data: 'doge_pay_5' }
-                    ],
-                    [
-                        { text: '$10', callback_data: 'doge_pay_10' },
-                        { text: '$20', callback_data: 'doge_pay_20' }
-                    ],
-                    [
-                        { text: '$50', callback_data: 'doge_pay_50' },
-                        { text: '$100', callback_data: 'doge_pay_100' }
-                    ],
-                    [{ text: '⬅️ Go Back', callback_data: 'pay_doge' }]
-                ]
-            }
-        });
-    }
-
-    if (data.startsWith('doge_pay_')) {
-        const amount = data.replace('doge_pay_', '');
-        const currency = 'DOGE';
-        console.log('🟡 Received DOGE payment request for amount:', amount);
-
-        try {
-                await bot.editMessageText(`🪙 Generating Dogecoin payment session for $${amount}`, {
-                chat_id: chatId,
-                message_id: messageId
-                });
-                console.log('🟢 Edited message successfully');
-
-                const result = await createNowPaymentsSession(chatId, amount, currency);
-                console.log('🔵 Got NowPayments response:', result);
-
-                if (result && result.payment_url && result.order_id) {
-                        const paymentUrl = result.payment_url;
-                        const orderId = result.order_id;
-                        const paymentId = result.payment_id;
-                        console.log('🟣 Using NowPayments OrderID:', orderId);
-
-                        const sql = `
-                                INSERT INTO payments (
-                                UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount,
-                                Currency, AmountPaidInUSD, CurrentRateToUSD,
-                                Status, Comments, OrderID, PaymentID
-                                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-
-                        const values = [
-                        chatId,                 // UserID
-                        'crypto',               // PaymentMethod
-                        null,                   // DigitalCurrencyAmount
-                        currency,               // Currency: DOGE
-                        parseFloat(amount),     // AmountPaidInUSD
-                        null,                   // CurrentRateToUSD
-                        'waiting',              // Status
-                        'DOGE pending payment', // Comments
-                        orderId,                 // OrderID
-                        paymentId              // ✅ REQUIRED for NowPayments status checks
-                        ];
-
-                        try {
-                                await db.query(sql, values);
-                                console.log('✅ Payment record inserted using NowPayments OrderID');
-                        } catch (dbErr) {
-                                console.error('❌ Error inserting payment into DB:', dbErr);
-                        }
-
-                await bot.sendMessage(chatId, `✅ Click the link below to pay with Dogecoin:\n\n${paymentUrl}`);
-                } else {
-                        await bot.sendMessage(chatId, '❌ Failed to create payment session. Please try again later.');
-                }
-        } catch (err) {
-                console.error('❌ Error handling Dogecoin payment:', err);
-                await bot.sendMessage(chatId, '⚠️ An error occurred while generating your Dogecoin payment link.');
-        }
-    }
-
-
-
-
-    if (data === 'pay_ton') {
-        return bot.editMessageText('🔗 Choose the TON network:', {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: 'TON (The Open Network)', callback_data: 'ton_network_native' }],
-                [{ text: '⬅️ Go Back', callback_data: 'pay_nowpayment' }]
-            ]
-        }
-        });
-    }
-
-    if (data === 'ton_network_native') {
-        return bot.editMessageText('💰 Choose the amount to pay in USD:', {
-                chat_id: chatId,
-                message_id: messageId,
-                reply_markup: {
-                inline_keyboard: [
-                        [
-                    //{ text: '$1', callback_data: 'ton_pay_1' },
-                        { text: '$2', callback_data: 'ton_pay_2' },
-                        { text: '$5', callback_data: 'ton_pay_5' }
-                        ],
-                        [
-                        { text: '$10', callback_data: 'ton_pay_10' },
-                        { text: '$20', callback_data: 'ton_pay_20' }
-                        ],
-                        [
-                        { text: '$50', callback_data: 'ton_pay_50' },
-                        { text: '$100', callback_data: 'ton_pay_100' }
-                        ],
-                        [{ text: '⬅️ Go Back', callback_data: 'pay_ton' }]
-                ]
-                }
-        });
-    }
-
-if (data.startsWith('ton_pay_')) {
-    const amount = data.replace('ton_pay_', '');
-    const currency = 'TON';
-    console.log('🟡 Receieved TON payment request for amount:', amount);
-
-    try {
-        await bot.editMessageText(`🪙 Generating TON payment session for $${amount}`, {
-            chat_id: chatId,
-            message_id: messageId
-        });
-        console.log('🟢 Edited message successfully');
-
-        // Create payment session
-        const result = await createNowPaymentsSession(chatId, amount, currency);
-        console.log('🔵 Got NowPayments response:', result);
-
-        // Ensure result contains required fields
-        if (result && result.payment_url && result.orderId) {
-                const paymentUrl = result.payment_url;
-                const orderId = result.orderId;
-                const paymentId = result.paymentId;
-                const invoiceId = result.invoiceid;
-                console.log('  Using NowPayments OrderID:', orderId);
-
-                const sql = `
-                        INSERT INTO payments (
-                        UserID, PaymentDate, PaymentMethod, DigitalCurrencyAmount,
-                        Currency, AmountPaidInUSD, CurrentRateToUSD,
-                        Status, Comments, OrderID, PaymentID, invoiceID
-                        ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-
-                const values = [
-                        chatId,                // UserID
-                        'crypto',              // PaymentMethod
-                        null,                  // DigitalCurrencyAmount (to be updated later)
-                        currency,              // Currency: TON
-                        parseFloat(amount),    // AmountPaidInUSD
-                        null,                  // CurrentRateToUSD (to be updated later)
-                        'waiting',             // Status
-                        'TON pending payment', // Comments
-                        orderId,               // OrderID from NowPayments
-                        paymentId,             // PaymentID
-                        invoiceId              // invoiceID from NowPayments
-                ];
-
-
-            try {
-                await db.query(sql, values);
-                console.log('✅ Payment record inserted using NowPayments OrderID');
-            } catch (dbErr) {
-                console.error('❌ Error inserting payment into DB:', dbErr);
-            }
-
-            await bot.sendMessage(chatId, `✅ Click the link below to pay with TON:\n\n${paymentUrl}`);
-        } else {
-            await bot.sendMessage(chatId, '❌ Failed to create payment session. Please try again later.');
-        }
-
-    } catch (err) {
-        console.error('❌ Error handling TON payment:', err);
-        await bot.sendMessage(chatId, '⚠️ An error occurred while generating your TON payment link.');
-    }
-}
-
-
-    if (data === 'back_to_payment') {
-        return bot.editMessageText('💳 Please choose a payment method:', {
-            chat_id: chatId,
-            message_id: messageId,
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: 'Direct (Credit Card)', callback_data: 'pay_direct' }],
-                    [{ text: 'Crypto Currency', callback_data: 'pay_nowpayment' }],
-                    [{ text: '⬅️ Go Back', callback_data: 'back_to_main' }]
-                ]
-            }
-        });
-    }
-
     // DEFAULT FALLBACK
     return bot.answerCallbackQuery(query.id, {
         text: '✅ Option selected.'
     });
 });
+

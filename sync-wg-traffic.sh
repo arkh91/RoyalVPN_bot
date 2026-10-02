@@ -9,6 +9,7 @@
 #   3. Auto-expires peers that cross max_data_limit
 #   4. Enforces peer state — expired=removed from wg, suspended=iptables block
 #   5. Re-enables peers whose DB flag was cleared by the admin/bot
+#   6. Applies/refreshes each active peer's speed_limit_kbps via tc
 #
 # Peer lifecycle:
 #   ACTIVE     is_expired=0  is_suspended=0  → in wg, no iptables block, is_active=1
@@ -33,7 +34,7 @@ set -uo pipefail
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DEBUG FLAG
-# --debug: skips all writes (DB, wg, iptables). Safe to run alongside live cron.
+# --debug: skips all writes (DB, wg, iptables, tc). Safe to run alongside live cron.
 # ─────────────────────────────────────────────────────────────────────────────
 DEBUG=0
 [[ "${1:-}" == "--debug" ]] && DEBUG=1
@@ -207,7 +208,7 @@ LOCAL_IPS=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^$')
 
 # Usage: is_local_ip <ip>
 # Returns 0 (true) if the IP belongs to this machine.
-# Used to skip SSH and call wg/iptables directly for the local server.
+# Used to skip SSH and call wg/iptables/tc directly for the local server.
 is_local_ip() { echo "$LOCAL_IPS" | grep -qF "$1"; }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -219,7 +220,7 @@ is_local_ip() { echo "$LOCAL_IPS" | grep -qF "$1"; }
 
 # Usage: ssh_run <host> [command]
 # Runs a command on a remote server via the wg-monitor SSH key.
-# With no command, ForceCommand on the remote (wg-peer-ctrl) takes over.
+# With no command, ForceCommand on the remote (wg-peer-ctrl.sh) takes over.
 ssh_run() {
     local host="$1"; shift
     ssh -T -n \
@@ -232,6 +233,13 @@ ssh_run() {
         "${SSH_USER}@${host}" "$@"
 }
 
+# Usage: local_ctrl <command...>
+# Runs a wg-peer-ctrl.sh verb directly on this machine (US08 itself),
+# bypassing SSH entirely. Mirrors ssh_run's calling convention.
+local_ctrl() {
+    /usr/local/bin/wg-peer-ctrl.sh "$@"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # WG DUMP
 # ─────────────────────────────────────────────────────────────────────────────
@@ -239,7 +247,7 @@ ssh_run() {
 # Usage: get_wg_dump <server_ip>
 # Returns raw tab-separated "wg show wg0 dump" output.
 # Runs wg locally for this machine; goes via SSH for remote servers.
-# ForceCommand on remote servers runs wg-peer-ctrl with no SSH_ORIGINAL_COMMAND,
+# ForceCommand on remote servers runs wg-peer-ctrl.sh with no SSH_ORIGINAL_COMMAND,
 # which defaults to "wg show wg0 dump".
 get_wg_dump() {
     local server_ip="$1"
@@ -262,8 +270,12 @@ get_wg_dump() {
 #   is dropped via iptables FORWARD rules. The client "connects" but gets
 #   no data. Used for temporary blocks (overdue payment, manual hold, etc.)
 #
-# Remote servers: commands sent to wg-peer-ctrl via SSH (see setup-vpn-server.sh).
-# Local server  : wg and iptables called directly (script runs as root).
+# ACTIVE peers with a cap → set_speed_limit / clear_speed_limit
+#   Peer stays fully connected; a tc bandwidth cap throttles both
+#   directions instead of blocking traffic outright.
+#
+# Remote servers: commands sent to wg-peer-ctrl.sh via SSH (see README).
+# Local server  : wg/iptables/tc called directly (script runs as root).
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Usage: disable_peer <server_ip> <pubkey> <client_id>
@@ -349,10 +361,7 @@ suspend_peer() {
 
     local result="" exit_code=0
     if is_local_ip "$server_ip"; then
-        iptables -C FORWARD -s "$allowed_ips" -j DROP 2>/dev/null \
-            || iptables -I FORWARD -s "$allowed_ips" -j DROP
-        iptables -C FORWARD -d "$allowed_ips" -j DROP 2>/dev/null \
-            || iptables -I FORWARD -d "$allowed_ips" -j DROP
+        result=$(local_ctrl peer-suspend "$allowed_ips" 2>&1) || exit_code=$?
     else
         result=$(ssh_run "$server_ip" "peer-suspend $allowed_ips" 2>&1) || exit_code=$?
     fi
@@ -385,10 +394,7 @@ unsuspend_peer() {
 
     local result="" exit_code=0
     if is_local_ip "$server_ip"; then
-        iptables -C FORWARD -s "$allowed_ips" -j DROP 2>/dev/null \
-            && iptables -D FORWARD -s "$allowed_ips" -j DROP || true
-        iptables -C FORWARD -d "$allowed_ips" -j DROP 2>/dev/null \
-            && iptables -D FORWARD -d "$allowed_ips" -j DROP || true
+        result=$(local_ctrl peer-unsuspend "$allowed_ips" 2>&1) || exit_code=$?
     else
         result=$(ssh_run "$server_ip" "peer-unsuspend $allowed_ips" 2>&1) || exit_code=$?
     fi
@@ -398,6 +404,67 @@ unsuspend_peer() {
     else
         log "ERROR" "  [UNSUSPEND] ✗ failed: ${result}"
     fi
+    return "$exit_code"
+}
+
+# Usage: set_speed_limit <server_ip> <allowed_ips> <kbps> <client_id>
+# Applies (or refreshes) a bandwidth cap for this peer via tc, both directions.
+# Called every cycle for any active peer with speed_limit_kbps > 0 — cheap
+# and idempotent (tc "replace", not "add"), so it also self-heals the cap
+# after a server reboot: unlike iptables-persistent, tc rules do not
+# survive a restart on their own.
+set_speed_limit() {
+    local server_ip="$1" allowed_ips="$2" kbps="$3" client_id="$4"
+    log "INFO" "  [SETLIMIT] client_id=${client_id} ip=${allowed_ips} kbps=${kbps}"
+
+    if [[ -z "$allowed_ips" || "$kbps" -le 0 ]]; then
+        log "ERROR" "  [SETLIMIT] ✗ missing ip or kbps for client_id=${client_id}"
+        return 1
+    fi
+
+    if [[ "$DEBUG" -eq 1 ]]; then
+        dbg "would run: peer-setlimit ${allowed_ips} ${kbps}"
+        return 0
+    fi
+
+    local result="" exit_code=0
+    if is_local_ip "$server_ip"; then
+        result=$(local_ctrl peer-setlimit "$allowed_ips" "$kbps" 2>&1) || exit_code=$?
+    else
+        result=$(ssh_run "$server_ip" "peer-setlimit $allowed_ips $kbps" 2>&1) || exit_code=$?
+    fi
+
+    if [[ "$exit_code" -eq 0 ]]; then
+        log "INFO"  "  [SETLIMIT] ✓ ${kbps}kbps applied"
+    else
+        log "ERROR" "  [SETLIMIT] ✗ failed: ${result}"
+    fi
+    return "$exit_code"
+}
+
+# Usage: clear_speed_limit <server_ip> <allowed_ips> <client_id>
+# Removes any tc shaping for this peer. Safe to call even if none exists —
+# called every cycle for peers with no speed_limit_kbps set, so clearing
+# the value in the DB actually removes a previously-applied cap.
+clear_speed_limit() {
+    local server_ip="$1" allowed_ips="$2" client_id="$3"
+    [[ -z "$allowed_ips" ]] && return 0
+
+    log "INFO" "  [CLEARLIMIT] client_id=${client_id} ip=${allowed_ips}"
+
+    if [[ "$DEBUG" -eq 1 ]]; then
+        dbg "would run: peer-clearlimit ${allowed_ips}"
+        return 0
+    fi
+
+    local result="" exit_code=0
+    if is_local_ip "$server_ip"; then
+        result=$(local_ctrl peer-clearlimit "$allowed_ips" 2>&1) || exit_code=$?
+    else
+        result=$(ssh_run "$server_ip" "peer-clearlimit $allowed_ips" 2>&1) || exit_code=$?
+    fi
+
+    [[ "$exit_code" -ne 0 ]] && log "ERROR" "  [CLEARLIMIT] ✗ failed: ${result}"
     return "$exit_code"
 }
 
@@ -413,24 +480,35 @@ unix_to_mysql_dt() {
 
 # Usage: normalize_cidr <address>
 # Ensures address is in CIDR notation (appends /32 if no prefix is present).
-# iptables requires CIDR; the DB may store bare IPs.
+# iptables/tc require CIDR; the DB may store bare IPs.
 normalize_cidr() {
     local addr="${1:-}"
     [[ -n "$addr" && "$addr" != */* ]] && addr="${addr}/32"
     echo "$addr"
 }
 
+# Usage: extract_group_token <notes>
+# Pulls the token out of a "[GROUP:<token>]" tag embedded in wg_clients.notes
+# (see db/WGKeyCreation.js — this tag is the ONLY thing linking sibling
+# device rows from the same purchase; there is no dedicated column for it).
+# Echoes nothing (empty string) if no tag is present — callers treat that
+# as "this peer is its own group of one" for backward compatibility with
+# rows created before this feature existed.
+extract_group_token() {
+    echo "${1:-}" | grep -oP '\[GROUP:\K[^\]]+' | head -1
+}
+
 # Usage: build_update_sql <cid> <new_rx> <new_tx> <wg_rx> <wg_tx> \
-#                         <hs_sql> <is_active> <total_new> <now_mysql>
-# Returns a single UPDATE statement for one peer row.
-# is_expired flips to 1 automatically (via CASE) when total >= max_data_limit,
-# so expiry is always atomic with the traffic write — no separate UPDATE needed.
-# last_rx/tx_snapshot stores the raw wg counter so the next run can compute
-# the correct delta even after a wg restart resets the counters to zero.
+#                         <hs_sql> <is_active> <now_mysql>
+# Returns an UPDATE statement for one peer's traffic/activity columns only.
+# Deliberately does NOT touch is_expired — expiry is now a GROUP decision
+# made once the whole dump has been scanned (see decide_group_expiry and
+# PASS 2 in process_server), not something a single peer can decide for
+# itself mid-scan.
 build_update_sql() {
     local cid="$1"     new_rx="$2"   new_tx="$3"
     local wg_rx="$4"   wg_tx="$5"    hs_sql="$6"
-    local is_act="$7"  total="$8"    now="$9"
+    local is_act="$7"  now="$8"
     cat <<SQL
 UPDATE wg_clients SET
     rx_bytes         = ${new_rx},
@@ -439,13 +517,24 @@ UPDATE wg_clients SET
     last_tx_snapshot = ${wg_tx},
     last_handshake   = ${hs_sql},
     is_active        = ${is_act},
-    is_expired       = CASE
-                           WHEN max_data_limit IS NOT NULL
-                            AND max_data_limit > 0
-                            AND ${total} >= max_data_limit THEN 1
-                           ELSE is_expired
-                       END,
     last_poll_at     = '${now}'
+WHERE client_id = ${cid};
+SQL
+}
+
+# Usage: build_expire_sql <cid> <now_mysql>
+# Marks one client_id expired and inactive. Used for every member of a
+# group once decide_group_expiry has determined the SHARED cap was
+# crossed — including members that were not seen in today's wg dump at
+# all (e.g. a second device that never connected this cycle still has
+# to be flagged, even though there is no live peer to remove from wg).
+build_expire_sql() {
+    local cid="$1" now="$2"
+    cat <<SQL
+UPDATE wg_clients SET
+    is_expired   = 1,
+    is_active    = 0,
+    last_poll_at = '${now}'
 WHERE client_id = ${cid};
 SQL
 }
@@ -455,14 +544,41 @@ SQL
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Usage: process_server <server_name> <server_ip>
-# Full sync cycle for one VPN server:
-#   1. Pull wg dump (local or SSH)
-#   2. Strip sudo noise, validate interface row
-#   3. Load all DB clients for this server into CLIENT_MAP (one query)
-#   4. Walk wg dump peers → classify, build SQL batch + action queues
-#   5. Walk DB peers not in the dump → queue re-enable or re-suspend
-#   6. Commit DB transaction
-#   7. Execute wg/iptables actions (after DB is safely written)
+#
+# Full sync cycle for one VPN server, now in TWO PASSES because a peer's
+# expiry can depend on usage from OTHER peers (its "device group" — see
+# extract_group_token above):
+#
+#   PASS 1 (peers in today's wg dump): for every peer, compute this
+#     cycle's RX/TX delta exactly as before, and accumulate it into a
+#     per-GROUP running total — regardless of what that peer's own
+#     individual Case turns out to be. Peers already EXPIRED or
+#     SUSPENDED are disabled/kept-blocked immediately, same as before
+#     (those are pre-existing states, not something this cycle decides).
+#     Everything else is queued as a PENDING decision rather than
+#     decided immediately, because its fate depends on its group's
+#     total, which isn't known until the whole dump has been scanned.
+#
+#   Between passes: every group's starting total (from EVERY client in
+#     the DB for this server, whether seen in today's dump or not) is
+#     combined with this cycle's deltas, then compared against that
+#     group's shared cap (the same max_data_limit value is written to
+#     every sibling row at purchase time — see WGKeyCreation.js — so
+#     any one member's value is the group's cap).
+#
+#   PASS 2: every PENDING peer is resolved using its group's verdict.
+#     If the group is OVER its cap, EVERY member of that group is
+#     expired and disabled together — including members with no live
+#     peer in today's dump (a device that never connected this cycle
+#     still gets flagged so it can't be re-enabled later) — even when
+#     only ONE device in the group did all the consuming and the
+#     others did none. If the group is still under its cap, the peer
+#     is treated as a normal active peer (speed limit applied/cleared
+#     as before).
+#
+# A peer/group with NO "[GROUP:...]" tag at all (rows created before
+# this feature existed) behaves exactly as before: a group of one,
+# expiring purely on its own usage.
 process_server() {
     local SERVER_NAME="$1"
     local SERVER_IP="$2"
@@ -508,7 +624,9 @@ process_server() {
     log "INFO" "  Got $(echo "$PEER_LINES" | wc -l) peer(s) from wg."
 
     # ── 3. Load all DB clients in one query ───────────────────────────────────
-    # CLIENT_MAP[pubkey] = "cid|rx|tx|snap_rx|snap_tx|is_act|is_exp|is_susp|is_del|max_limit|address"
+    # CLIENT_MAP[pubkey] = "cid|rx|tx|snap_rx|snap_tx|is_act|is_exp|is_susp|is_del|max_limit|speed_kbps|address|group"
+    # notes is now selected too, purely to extract the group tag from it —
+    # nothing else in notes is read.
     declare -A CLIENT_MAP=()
     declare -A SEEN_IN_DUMP=()
 
@@ -525,7 +643,9 @@ process_server() {
                is_suspended,
                is_deleted,
                COALESCE(max_data_limit,   0),
-               COALESCE(address,         '')
+               COALESCE(speed_limit_kbps, 0),
+               COALESCE(address,         ''),
+               COALESCE(notes,           '')
         FROM   wg_clients
         WHERE  server_name = '${SERVER_NAME}'
           AND  is_deleted  = 0;
@@ -541,24 +661,50 @@ process_server() {
         return 0
     fi
 
-    # Populate CLIENT_MAP — one entry per peer
+    # Populate CLIENT_MAP — one entry per peer. A peer with no [GROUP:...]
+    # tag gets its OWN pubkey as its group id, so it behaves as a group of
+    # one everywhere below — no special-casing needed elsewhere.
     local PK="" CID="" RX="" TX="" SRX="" STX="" \
-          IACT="" IEXP="" ISUSP="" IDEL="" MLIM="" ADDR=""
-    while IFS=$'\t' read -r PK CID RX TX SRX STX IACT IEXP ISUSP IDEL MLIM ADDR; do
+          IACT="" IEXP="" ISUSP="" IDEL="" MLIM="" SPD="" ADDR="" NOTES="" GRP=""
+    while IFS=$'\t' read -r PK CID RX TX SRX STX IACT IEXP ISUSP IDEL MLIM SPD ADDR NOTES; do
         [[ -z "${PK:-}" ]] && continue
-        # FIX: ensure ADDR is always defined and in CIDR notation
         ADDR=$(normalize_cidr "${ADDR:-}")
-        CLIENT_MAP["$PK"]="${CID}|${RX}|${TX}|${SRX}|${STX}|${IACT}|${IEXP}|${ISUSP}|${IDEL}|${MLIM}|${ADDR}"
+        GRP=$(extract_group_token "${NOTES:-}")
+        [[ -z "$GRP" ]] && GRP="solo:${PK}"
+        CLIENT_MAP["$PK"]="${CID}|${RX}|${TX}|${SRX}|${STX}|${IACT}|${IEXP}|${ISUSP}|${IDEL}|${MLIM}|${SPD}|${ADDR}|${GRP}"
     done <<< "$DB_CLIENTS"
 
     log "INFO" "  Loaded ${#CLIENT_MAP[@]} client(s) from DB."
 
-    # ── 4. Process peers in wg dump ───────────────────────────────────────────
+    # ── 3.5 Seed each group's running total from EVERY known member ──────────
+    # Includes members that are soft-deleted-excluded already (query above)
+    # but NOT yet filtered by today's dump — a sibling device that simply
+    # didn't connect this cycle still has to count toward the shared total.
+    declare -A GROUP_TOTAL=()   # group -> running byte total (seeded, then added to in Pass 1)
+    declare -A GROUP_CAP=()     # group -> shared max_data_limit (same value on every member)
+    declare -A GROUP_MEMBERS=() # group -> space-separated list of this server's client_ids in it
+
+    local _pk
+    for _pk in "${!CLIENT_MAP[@]}"; do
+        IFS='|' read -r CID RX TX SRX STX IACT IEXP ISUSP IDEL MLIM SPD ADDR GRP <<< "${CLIENT_MAP[$_pk]}"
+        GROUP_TOTAL["$GRP"]=$(( ${GROUP_TOTAL["$GRP"]:-0} + RX + TX ))
+        [[ -z "${GROUP_CAP[$GRP]:-}" ]] && GROUP_CAP["$GRP"]="$MLIM"
+        GROUP_MEMBERS["$GRP"]="${GROUP_MEMBERS[$GRP]:-} ${CID}"
+    done
+
+    # ── 4. PASS 1 — scan today's dump, update traffic, defer expiry ──────────
     local SQL_BATCH=""
-    local -a DISABLE_Q=()     # expired peers  → remove from wg
+    local -a DISABLE_Q=()     # peers to remove from wg (already-expired peers + newly-expired groups)
     local -a SUSPEND_Q=()     # suspended peers → ensure iptables block
     local -a UNSUSPEND_Q=()   # peers whose suspension was lifted → remove block
+    local -a SETLIMIT_Q=()    # active peers with a speed cap → (re)apply every cycle
+    local -a CLEARLIMIT_Q=()  # active peers with no cap → ensure no stale limit remains
     local UPDATED=0 DISABLED=0 SUSPENDED=0 UNSUSPENDED=0 SKIPPED=0
+
+    # PENDING[] holds one "pubkey|cid|addr|group|spd" entry per peer whose
+    # expiry depends on its group's total, decided only after the full
+    # dump has been scanned (Pass 2, below).
+    local -a PENDING=()
 
     local PUBKEY="" _P="" _E="" _A="" LAST_HS="" WG_RX="" WG_TX="" _KA=""
     while IFS=$'\t' read -r PUBKEY _P _E _A LAST_HS WG_RX WG_TX _KA; do
@@ -573,27 +719,22 @@ process_server() {
             continue
         fi
 
-        # Unpack DB row — FIX: initialize ALL locals to safe defaults first
         CID="0"; RX="0"; TX="0"; SRX="0"; STX="0"
-        IACT="0"; IEXP="0"; ISUSP="0"; IDEL="0"; MLIM="0"; ADDR=""
-        IFS='|' read -r CID RX TX SRX STX IACT IEXP ISUSP IDEL MLIM ADDR \
+        IACT="0"; IEXP="0"; ISUSP="0"; IDEL="0"; MLIM="0"; SPD="0"; ADDR=""; GRP=""
+        IFS='|' read -r CID RX TX SRX STX IACT IEXP ISUSP IDEL MLIM SPD ADDR GRP \
             <<< "${CLIENT_MAP[$PUBKEY]}"
 
-        # Sanitise numeric fields — replace anything non-numeric with 0
         local var
-        for var in WG_RX WG_TX SRX STX RX TX LAST_HS MLIM CID; do
+        for var in WG_RX WG_TX SRX STX RX TX LAST_HS MLIM SPD CID; do
             [[ "${!var}" =~ ^[0-9]+$ ]] || printf -v "$var" '%s' '0'
         done
 
-        # last_handshake: stored for reference — does not affect active status
         local HS_SQL="NULL"
         if [[ "${LAST_HS:-0}" -gt 0 ]]; then
             local HS_DT; HS_DT=$(unix_to_mysql_dt "$LAST_HS")
             [[ -n "$HS_DT" ]] && HS_SQL="'${HS_DT}'"
         fi
 
-        # Delta traffic — wg counters reset to 0 when the interface restarts.
-        # If current < snapshot, a restart happened: treat current value as delta.
         local DELTA_RX=0 DELTA_TX=0
         if [[ "$WG_RX" -ge "$SRX" ]]; then
             DELTA_RX=$(( WG_RX - SRX ))
@@ -610,17 +751,23 @@ process_server() {
 
         local NEW_RX=$(( RX + DELTA_RX ))
         local NEW_TX=$(( TX + DELTA_TX ))
-        local TOTAL=$(( NEW_RX + NEW_TX ))
+
+        # This peer's fresh traffic counts toward its group's total
+        # regardless of which Case it falls into below — an already-
+        # expired or suspended peer can still generate a trickle of
+        # traffic, and the group total must stay accurate either way.
+        GROUP_TOTAL["$GRP"]=$(( ${GROUP_TOTAL["$GRP"]:-0} + DELTA_RX + DELTA_TX ))
 
         # ════════════════════════════════════════════════════════════════════
         # CASE A — Peer is EXPIRED
-        # Should not be in wg. Save traffic then remove it.
+        # Already decided in a previous cycle (or by this group's own
+        # verdict later this same cycle — see Pass 2). Not re-evaluated
+        # here: just keep its traffic current and make sure it's out of wg.
         # ════════════════════════════════════════════════════════════════════
         if [[ "$IEXP" -eq 1 ]]; then
             log "WARN" "  [${PUBKEY:0:20}…] expired but still in wg — will disable."
             SQL_BATCH+=$(build_update_sql \
-                "$CID" "$NEW_RX" "$NEW_TX" "$WG_RX" "$WG_TX" \
-                "$HS_SQL" "0" "$TOTAL" "$NOW_MYSQL")
+                "$CID" "$NEW_RX" "$NEW_TX" "$WG_RX" "$WG_TX" "$HS_SQL" "0" "$NOW_MYSQL")
             DISABLE_Q+=("${PUBKEY}|${CID}")
             (( DISABLED++ )) || true
             continue
@@ -628,57 +775,72 @@ process_server() {
 
         # ════════════════════════════════════════════════════════════════════
         # CASE B — Peer is SUSPENDED
-        # Stays in wg, but traffic is blocked by iptables.
-        # Re-apply the iptables block every run (idempotent via -C check).
+        # An admin/payment hold, unrelated to data usage — stays exactly as
+        # before, not affected by group totals.
         # ════════════════════════════════════════════════════════════════════
         if [[ "$ISUSP" -eq 1 ]]; then
             log "INFO" "  [${PUBKEY:0:20}…] suspended — updating traffic, ensuring block."
             SQL_BATCH+=$(build_update_sql \
-                "$CID" "$NEW_RX" "$NEW_TX" "$WG_RX" "$WG_TX" \
-                "$HS_SQL" "0" "$TOTAL" "$NOW_MYSQL")
+                "$CID" "$NEW_RX" "$NEW_TX" "$WG_RX" "$WG_TX" "$HS_SQL" "0" "$NOW_MYSQL")
             SUSPEND_Q+=("${ADDR}|${CID}")
             (( SUSPENDED++ )) || true
             continue
         fi
 
         # ════════════════════════════════════════════════════════════════════
-        # CASE C — Peer just crossed max_data_limit THIS cycle
-        # is_expired flips to 1 in the SQL CASE. Remove from wg after commit.
+        # CASE C/D — Normal peer, not yet expired or suspended.
+        # Traffic is recorded now; whether it stays active or gets expired
+        # is decided in Pass 2, once every peer's contribution to its
+        # group's total has been counted.
         # ════════════════════════════════════════════════════════════════════
-        if [[ "$MLIM" -gt 0 && "$TOTAL" -ge "$MLIM" ]]; then
-            log "WARN" "  [${PUBKEY:0:20}…] limit reached (${TOTAL} >= ${MLIM} bytes) — expiring."
-            SQL_BATCH+=$(build_update_sql \
-                "$CID" "$NEW_RX" "$NEW_TX" "$WG_RX" "$WG_TX" \
-                "$HS_SQL" "0" "$TOTAL" "$NOW_MYSQL")
-            DISABLE_Q+=("${PUBKEY}|${CID}")
-            (( DISABLED++ )) || true
-            continue
-        fi
-
-        # ════════════════════════════════════════════════════════════════════
-        # CASE D — Normal active peer
-        # is_active=1: peer exists in wg and is connectable.
-        # If it was previously suspended (is_active was 0, is_susp now 0),
-        # queue an unsuspend to remove any lingering iptables rules.
-        # ════════════════════════════════════════════════════════════════════
-        # Only queue unsuspend if the peer has a valid IP address.
-        # Empty ADDR means the DB record has no address — nothing to unblock.
-        if [[ "$IACT" -eq 0 && -n "$ADDR" ]]; then
-            # Peer was previously inactive — may have a stale iptables block
-            # from a prior suspension that was cleared in DB.
-            UNSUSPEND_Q+=("${ADDR}|${CID}")
-        fi
-
-        dbg "[${PUBKEY:0:20}…] +RX:${DELTA_RX}B +TX:${DELTA_TX}B total:${TOTAL}B"
-        log "INFO" "  [${PUBKEY:0:20}…] +RX:${DELTA_RX}  +TX:${DELTA_TX}  total:${TOTAL}  active"
+        dbg "[${PUBKEY:0:20}…] +RX:${DELTA_RX}B +TX:${DELTA_TX}B group:${GRP} group_total_so_far:${GROUP_TOTAL[$GRP]}"
+        log "INFO" "  [${PUBKEY:0:20}…] +RX:${DELTA_RX}  +TX:${DELTA_TX}  group:${GRP}"
         SQL_BATCH+=$(build_update_sql \
-            "$CID" "$NEW_RX" "$NEW_TX" "$WG_RX" "$WG_TX" \
-            "$HS_SQL" "1" "$TOTAL" "$NOW_MYSQL")
+            "$CID" "$NEW_RX" "$NEW_TX" "$WG_RX" "$WG_TX" "$HS_SQL" "1" "$NOW_MYSQL")
+        PENDING+=("${PUBKEY}|${CID}|${ADDR}|${GRP}|${SPD}")
         (( UPDATED++ )) || true
 
     done <<< "$PEER_LINES"
 
-    # ── 5. Handle DB peers NOT found in the wg dump ───────────────────────────
+    # ── 5. Decide which groups are now OVER their shared cap ──────────────────
+    # EXPIRED_GROUPS[group]=1 means every member of that group — live in
+    # today's dump or not — gets expired together this cycle.
+    declare -A EXPIRED_GROUPS=()
+    local _grp
+    for _grp in "${!GROUP_TOTAL[@]}"; do
+        local cap="${GROUP_CAP[$_grp]:-0}"
+        if [[ "$cap" -gt 0 && "${GROUP_TOTAL[$_grp]}" -ge "$cap" ]]; then
+            EXPIRED_GROUPS["$_grp"]=1
+            log "WARN" "  [GROUP ${_grp}] shared limit reached (${GROUP_TOTAL[$_grp]} >= ${cap} bytes) — expiring all ${GROUP_MEMBERS[$_grp]:-}"
+        fi
+    done
+
+    # ── 6. PASS 2 — resolve every PENDING peer using its group's verdict ─────
+    local ITEM_P="" P_PUBKEY="" P_CID="" P_ADDR="" P_GRP="" P_SPD=""
+    for ITEM_P in "${PENDING[@]+"${PENDING[@]}"}"; do
+        IFS='|' read -r P_PUBKEY P_CID P_ADDR P_GRP P_SPD <<< "$ITEM_P"
+
+        if [[ -n "${EXPIRED_GROUPS[$P_GRP]:-}" ]]; then
+            SQL_BATCH+=$(build_expire_sql "$P_CID" "$NOW_MYSQL")
+            DISABLE_Q+=("${P_PUBKEY}|${P_CID}")
+            (( DISABLED++ )) || true
+            continue
+        fi
+
+        # Group still under its cap — ordinary active peer.
+        if [[ -n "$P_ADDR" ]]; then
+            if [[ "$P_SPD" -gt 0 ]]; then
+                SETLIMIT_Q+=("${P_ADDR}|${P_SPD}|${P_CID}")
+            else
+                CLEARLIMIT_Q+=("${P_ADDR}|${P_CID}")
+            fi
+        fi
+    done
+
+    # ── 7. Handle DB peers NOT found in the wg dump at all ────────────────────
+    # Includes, crucially, a sibling device that never connected THIS cycle
+    # but whose group just got expired above — it must be flagged too,
+    # never queued for re-enable.
     local -a ENABLE_Q=()     # peers to re-add to wg (normal peers gone missing)
     local -a RESUSPEND_Q=()  # suspended peers that disappeared — re-add + re-block
     local REENABLED=0
@@ -686,16 +848,22 @@ process_server() {
     for PK in "${!CLIENT_MAP[@]}"; do
         [[ -n "${SEEN_IN_DUMP[$PK]+_}" ]] && continue
 
-        # Reset locals for each iteration
-        CID="0"; IACT="0"; IEXP="0"; ISUSP="0"; IDEL="0"; MLIM="0"; ADDR=""
-        IFS='|' read -r CID _ _ _ _ IACT IEXP ISUSP IDEL MLIM ADDR \
+        CID="0"; IACT="0"; IEXP="0"; ISUSP="0"; IDEL="0"; MLIM="0"; SPD="0"; ADDR=""; GRP=""
+        IFS='|' read -r CID _ _ _ _ IACT IEXP ISUSP IDEL MLIM _ ADDR GRP \
             <<< "${CLIENT_MAP[$PK]}"
 
         [[ "$IDEL" -eq 1 ]] && continue   # already soft-deleted — ignore
 
-        if [[ "$IEXP" -eq 1 ]]; then
+        if [[ -n "${EXPIRED_GROUPS[$GRP]:-}" ]]; then
+            # This peer's group just crossed its cap this cycle, even though
+            # THIS particular device generated no traffic of its own. Flag
+            # it (nothing to remove from wg — it was never there this run).
+            log "WARN" "  [${PK:0:20}…] not in wg this cycle but its group just hit the shared cap — flagging expired."
+            SQL_BATCH+=$(build_expire_sql "$CID" "$NOW_MYSQL")
+            (( DISABLED++ )) || true
+
+        elif [[ "$IEXP" -eq 1 ]]; then
             # Expected absence: expired peer was correctly removed from wg.
-            # Ensure is_active=0 in case it was never updated.
             if [[ "$IACT" -eq 1 ]]; then
                 SQL_BATCH+="
 UPDATE wg_clients
@@ -705,34 +873,30 @@ WHERE  client_id   = ${CID};"
             fi
 
         elif [[ "$ISUSP" -eq 1 ]]; then
-            # Suspended peers should REMAIN in wg (only iptables blocks them).
-            # If missing, something removed it externally — re-add and re-block.
             log "WARN" "  [${PK:0:20}…] suspended but missing from wg — will re-add and block."
             RESUSPEND_Q+=("${PK}|${ADDR}|${CID}")
             (( REENABLED++ )) || true
 
         else
-            # Normal peer missing from wg — re-add it.
-            # Happens after a wg restart, external removal, or admin re-enabling.
             log "INFO" "  [${PK:0:20}…] should be active but not in wg — queuing re-enable."
             ENABLE_Q+=("${PK}|${ADDR}|${CID}")
             (( REENABLED++ )) || true
         fi
     done
 
-    # ── 6. Commit all DB changes in one transaction ───────────────────────────
+    # ── 8. Commit all DB changes in one transaction ───────────────────────────
     if [[ -n "$SQL_BATCH" ]]; then
         local TX_RESULT=""
         TX_RESULT=$(db_exec "START TRANSACTION; ${SQL_BATCH} COMMIT;") || {
             log "ERROR" "  DB transaction failed: $TX_RESULT"
             db_exec "ROLLBACK;" 2>/dev/null || true
-            unset CLIENT_MAP SEEN_IN_DUMP
+            unset CLIENT_MAP SEEN_IN_DUMP GROUP_TOTAL GROUP_CAP GROUP_MEMBERS EXPIRED_GROUPS
             return 0
         }
     fi
 
-    # ── 7. Execute wg / iptables actions (always after DB commit) ─────────────
-    local ITEM="" KPUBKEY="" KADDR="" KCID=""
+    # ── 9. Execute wg / iptables / tc actions (always after DB commit) ────────
+    local ITEM="" KPUBKEY="" KADDR="" KCID="" KSPD=""
 
     for ITEM in "${DISABLE_Q[@]+"${DISABLE_Q[@]}"}"; do
         KPUBKEY=""; KCID=""
@@ -765,8 +929,20 @@ WHERE  client_id   = ${CID};"
         suspend_peer "$SERVER_IP" "$KADDR" "$KCID"
     done
 
+    for ITEM in "${SETLIMIT_Q[@]+"${SETLIMIT_Q[@]}"}"; do
+        KADDR=""; KSPD=""; KCID=""
+        IFS='|' read -r KADDR KSPD KCID <<< "$ITEM"
+        set_speed_limit "$SERVER_IP" "$KADDR" "$KSPD" "$KCID"
+    done
+
+    for ITEM in "${CLEARLIMIT_Q[@]+"${CLEARLIMIT_Q[@]}"}"; do
+        KADDR=""; KCID=""
+        IFS='|' read -r KADDR KCID <<< "$ITEM"
+        clear_speed_limit "$SERVER_IP" "$KADDR" "$KCID"
+    done
+
     log "INFO" "  ✓ updated:${UPDATED}  disabled:${DISABLED}  suspended:${SUSPENDED}  unsuspended:${UNSUSPENDED}  re-enabled:${REENABLED}  skipped:${SKIPPED}"
-    unset CLIENT_MAP SEEN_IN_DUMP
+    unset CLIENT_MAP SEEN_IN_DUMP GROUP_TOTAL GROUP_CAP GROUP_MEMBERS EXPIRED_GROUPS
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@
 
 DB_NAME="irvpn"
 DB_USER="root"
+DNS_DEFAULT="1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4"
 
 echo "======================================"
 echo "      VPN Server Manager (MySQL)"
@@ -43,7 +44,7 @@ view_servers() {
         "SELECT ServerID, ServerName, ServerAlias, Country, City,
                 PublicURLInternational, PublicURLIran,
                 WireGuardPort, OutlinePort,
-                IPAddress, APIKey, BearerToken,
+                IPAddress, DNS, APIKey, BearerToken,
                 MaxUsers, CurrentUsers, Status,
                 CreatedAt, UpdatedAt
          FROM vpn_servers
@@ -76,6 +77,12 @@ insert_server() {
     fi
 
     ask IPAddress "IPAddress (or type NULL)"
+
+    read -p "DNS, comma-separated (Enter for default $DNS_DEFAULT): " DNS
+    if [[ -z "$DNS" ]]; then
+        DNS="$DNS_DEFAULT"
+    fi
+
     ask APIKey "APIKey (or type NULL)"
     ask BearerToken "BearerToken (or type NULL)"
     ask MaxUsers "MaxUsers"
@@ -84,7 +91,7 @@ insert_server() {
         ServerName, ServerAlias, Country, City,
         PublicURLInternational, PublicURLIran,
         WireGuardPort, OutlinePort,
-        IPAddress, APIKey, BearerToken,
+        IPAddress, DNS, APIKey, BearerToken,
         MaxUsers, CurrentUsers, Status
     ) VALUES (
         '$ServerName',
@@ -96,6 +103,7 @@ insert_server() {
         $WireGuardPort,
         $OutlinePort,
         NULLIF('$IPAddress','NULL'),
+        '$DNS',
         NULLIF('$APIKey','NULL'),
         NULLIF('$BearerToken','NULL'),
         $MaxUsers,
@@ -143,6 +151,7 @@ update_server() {
     read -p "WireGuardPort: " WireGuardPort
     read -p "OutlinePort (or 0 for NULL): " OutlinePort
     read -p "IPAddress (or type NULL): " IPAddress
+    read -p "DNS, comma-separated (leave empty to keep unchanged): " DNS
     read -p "APIKey (or type NULL): " APIKey
     read -p "BearerToken (or type NULL): " BearerToken
     read -p "MaxUsers: " MaxUsers
@@ -163,6 +172,7 @@ update_server() {
     [[ ! -z "$WireGuardPort" ]] && SQL+="WireGuardPort=$WireGuardPort,"
     [[ ! -z "$OutlinePort" ]] && SQL+="OutlinePort=$OutlinePort,"
     [[ ! -z "$IPAddress" ]] && SQL+="IPAddress=NULLIF('$IPAddress','NULL'),"
+    [[ ! -z "$DNS" ]] && SQL+="DNS='$DNS',"
     [[ ! -z "$APIKey" ]] && SQL+="APIKey=NULLIF('$APIKey','NULL'),"
     [[ ! -z "$BearerToken" ]] && SQL+="BearerToken=NULLIF('$BearerToken','NULL'),"
     [[ ! -z "$MaxUsers" ]] && SQL+="MaxUsers=$MaxUsers,"
